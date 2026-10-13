@@ -9,11 +9,11 @@ namespace Ticketing.Api.Services;
 
 public class TokenService(IConfiguration cfg)
 {
-    public (string Token, DateTimeOffset ExpiraEn) CrearAccessToken(Usuario u)
+    public (string Token, DateTimeOffset ExpiresAt) CreateAccessToken(Usuario u)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(cfg["Jwt:Key"]!));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-        var expira = DateTimeOffset.UtcNow.AddMinutes(cfg.GetValue("Jwt:AccessMinutes", 15));
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(cfg.GetValue("Jwt:AccessMinutes", 15));
 
         var claims = new[]
         {
@@ -24,11 +24,11 @@ public class TokenService(IConfiguration cfg)
         };
 
         var jwt = new JwtSecurityToken(cfg["Jwt:Issuer"], cfg["Jwt:Audience"], claims,
-            expires: expira.UtcDateTime, signingCredentials: creds);
-        return (new JwtSecurityTokenHandler().WriteToken(jwt), expira);
+            expires: expiresAt.UtcDateTime, signingCredentials: creds);
+        return (new JwtSecurityTokenHandler().WriteToken(jwt), expiresAt);
     }
 
-    public static string NuevoRefreshToken() =>
+    public static string GenerateRefreshToken() =>
         Convert.ToBase64String(RandomNumberGenerator.GetBytes(64))
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 

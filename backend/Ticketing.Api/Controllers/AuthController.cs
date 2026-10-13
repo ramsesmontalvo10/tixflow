@@ -10,85 +10,102 @@ using Ticketing.Api.Services;
 
 namespace Ticketing.Api.Controllers;
 
-public class RegistroDto
+public class RegisterDto
 {
     [Required, StringLength(100, MinimumLength = 2)] public string Nombre { get; set; } = "";
     [Required, EmailAddress, StringLength(200)] public string Email { get; set; } = "";
     [Required, StringLength(100, MinimumLength = 8)] public string Password { get; set; } = "";
 }
+
 public class LoginDto
 {
     [Required] public string Email { get; set; } = "";
     [Required] public string Password { get; set; } = "";
 }
-public class RefreshDto { [Required] public string RefreshToken { get; set; } = ""; }
 
-public record AuthRespuesta(string AccessToken, DateTimeOffset AccessExpiraEn,
-    string RefreshToken, int UsuarioId, string Rol);
+public class RefreshDto 
+{ 
+    [Required] public string RefreshToken { get; set; } = ""; 
+}
+
+public record AuthResponse(
+    string AccessToken, 
+    DateTimeOffset AccessExpiresAt,
+    string RefreshToken, 
+    int UsuarioId, 
+    string Rol
+);
 
 [ApiController]
 [Route("auth")]
 [EnableRateLimiting("auth")]
 public class AuthController(TicketingDb db, TokenService tokens, IConfiguration cfg) : ControllerBase
 {
-    private static readonly string HashFalso = BCrypt.Net.BCrypt.HashPassword("contrasena-falsa");
+    private static readonly string FakeHash = BCrypt.Net.BCrypt.HashPassword("fake-password");
 
-    [HttpPost("registro")]
-    public async Task<IActionResult> Registro(RegistroDto dto)
+    [HttpPost("register")]
+    public async Task<IActionResult> Register(RegisterDto dto)
     {
         var email = dto.Email.Trim().ToLowerInvariant();
         if (await db.Usuarios.AnyAsync(u => u.Email == email))
             return Conflict(new { error = "El email ya está registrado" });
 
-        var u = new Usuario
+        var user = new Usuario
         {
-            Nombre = dto.Nombre.Trim(), Email = email, Rol = "asistente",
+            Nombre = dto.Nombre.Trim(), 
+            Email = email, 
+            Rol = "asistente",
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
             CreadoEn = DateTimeOffset.UtcNow
         };
-        db.Usuarios.Add(u);
-        try { await db.SaveChangesAsync(); }
+        db.Usuarios.Add(user);
+        try 
+        { 
+            await db.SaveChangesAsync(); 
+        }
         catch (DbUpdateException) 
-        { return Conflict(new { error = "El email ya está registrado" }); }
+        { 
+            return Conflict(new { error = "El email ya está registrado" }); 
+        }
 
-        return StatusCode(201, await EmitirAsync(u));
+        return StatusCode(201, await IssueTokensAsync(user));
     }
 
     [HttpPost("login")]
     public async Task<IActionResult> Login(LoginDto dto)
     {
         var email = dto.Email.Trim().ToLowerInvariant();
-        var u = await db.Usuarios.FirstOrDefaultAsync(x => x.Email == email);
-        var ok = BCrypt.Net.BCrypt.Verify(dto.Password, u?.PasswordHash ?? HashFalso);
-        if (u is null || !ok || !u.Activo) return Invalido();
-        return Ok(await EmitirAsync(u));
+        var user = await db.Usuarios.FirstOrDefaultAsync(x => x.Email == email);
+        var isValid = BCrypt.Net.BCrypt.Verify(dto.Password, user?.PasswordHash ?? FakeHash);
+        if (user is null || !isValid || !user.Activo) return InvalidCredentials();
+        return Ok(await IssueTokensAsync(user));
     }
 
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh(RefreshDto dto)
     {
         var hash = TokenService.Hash(dto.RefreshToken);
-        var rt = await db.RefreshTokens.FirstOrDefaultAsync(x => x.TokenHash == hash);
-        if (rt is null) return Invalido();
+        var refreshTokenRecord = await db.RefreshTokens.FirstOrDefaultAsync(x => x.TokenHash == hash);
+        if (refreshTokenRecord is null) return InvalidCredentials();
 
-        var ahora = DateTimeOffset.UtcNow;
-        if (rt.RevocadoEn is null && rt.ExpiraEn <= ahora) return Invalido();
+        var now = DateTimeOffset.UtcNow;
+        if (refreshTokenRecord.RevocadoEn is null && refreshTokenRecord.ExpiraEn <= now) return InvalidCredentials();
 
-        var filas = rt.RevocadoEn is null
-            ? await db.RefreshTokens.Where(x => x.Id == rt.Id && x.RevocadoEn == null)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.RevocadoEn, ahora))
+        var rowsAffected = refreshTokenRecord.RevocadoEn is null
+            ? await db.RefreshTokens.Where(x => x.Id == refreshTokenRecord.Id && x.RevocadoEn == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.RevocadoEn, now))
             : 0;
 
-        if (filas == 0)
+        if (rowsAffected == 0)
         {
-            await db.RefreshTokens.Where(x => x.UsuarioId == rt.UsuarioId && x.RevocadoEn == null)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.RevocadoEn, ahora));
-            return Invalido();
+            await db.RefreshTokens.Where(x => x.UsuarioId == refreshTokenRecord.UsuarioId && x.RevocadoEn == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.RevocadoEn, now));
+            return InvalidCredentials();
         }
 
-        var u = await db.Usuarios.FindAsync(rt.UsuarioId);
-        if (u is null || !u.Activo) return Invalido();
-        return Ok(await EmitirAsync(u, rt.Id));
+        var user = await db.Usuarios.FindAsync(refreshTokenRecord.UsuarioId);
+        if (user is null || !user.Activo) return InvalidCredentials();
+        return Ok(await IssueTokensAsync(user, refreshTokenRecord.Id));
     }
 
     [HttpPost("logout")]
@@ -109,26 +126,29 @@ public class AuthController(TicketingDb db, TokenService tokens, IConfiguration 
         rol = User.FindFirstValue(ClaimTypes.Role)
     });
 
-    private IActionResult Invalido() => Unauthorized(new { error = "Credenciales inválidas" });
+    private IActionResult InvalidCredentials() => Unauthorized(new { error = "Credenciales inválidas" });
 
-    private async Task<AuthRespuesta> EmitirAsync(Usuario u, Guid? reemplaza = null)
+    private async Task<AuthResponse> IssueTokensAsync(Usuario user, Guid? replaceId = null)
     {
-        var (access, expira) = tokens.CrearAccessToken(u);
-        var refresh = TokenService.NuevoRefreshToken();
-        var ahora = DateTimeOffset.UtcNow;
+        var (access, expiresAt) = tokens.CreateAccessToken(user);
+        var refresh = TokenService.GenerateRefreshToken();
+        var now = DateTimeOffset.UtcNow;
 
-        var nuevo = new RefreshToken
+        var newToken = new RefreshToken
         {
-            Id = Guid.NewGuid(), UsuarioId = u.Id, TokenHash = TokenService.Hash(refresh),
-            CreadoEn = ahora, ExpiraEn = ahora.AddDays(cfg.GetValue("Jwt:RefreshDays", 7))
+            Id = Guid.NewGuid(), 
+            UsuarioId = user.Id, 
+            TokenHash = TokenService.Hash(refresh),
+            CreadoEn = now, 
+            ExpiraEn = now.AddDays(cfg.GetValue("Jwt:RefreshDays", 7))
         };
-        db.RefreshTokens.Add(nuevo);
+        db.RefreshTokens.Add(newToken);
         await db.SaveChangesAsync();
 
-        if (reemplaza is Guid viejo)
-            await db.RefreshTokens.Where(x => x.Id == viejo)
-                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ReemplazadoPorId, nuevo.Id));
+        if (replaceId is Guid oldId)
+            await db.RefreshTokens.Where(x => x.Id == oldId)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.ReemplazadoPorId, newToken.Id));
 
-        return new AuthRespuesta(access, expira, refresh, u.Id, u.Rol);
+        return new AuthResponse(access, expiresAt, refresh, user.Id, user.Rol);
     }
 }
