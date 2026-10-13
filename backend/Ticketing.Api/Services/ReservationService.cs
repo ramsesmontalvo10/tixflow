@@ -11,119 +11,108 @@ public interface IReservationService
 
 public record ReserveRequestDto(int ZonaId, int Cantidad);
 
-public record ReservationResultDto(
-    bool Success,
-    string Message,
-    int? ReservaId,
-    long? TotalCentesimos,
-    DateTimeOffset? ExpiraEn
-);
+public enum ReservationError
+{
+    None, InvalidQuantity, ZoneNotFound, SaleNotOpen, NoPricePhase, CapacityExceeded, AccountLimitExceeded
+}
 
-public class ReservationService(TicketingDb context) : IReservationService
+public record ReservationResultDto(
+    ReservationError Error,
+    string Message,
+    int? ReservaId = null,
+    int? ZonaId = null,
+    int? Cantidad = null,
+    long? PrecioUnitarioCentesimos = null,
+    long? TotalCentesimos = null,
+    DateTimeOffset? ExpiraEn = null)
+{
+    public bool Success => Error == ReservationError.None;
+}
+
+public class ReservationService(TicketingDb context, IConfiguration cfg) : IReservationService
 {
     public async Task<ReservationResultDto> CreateReservationAsync(int asistenteId, ReserveRequestDto request)
     {
         if (request.Cantidad <= 0)
+            return Fail(ReservationError.InvalidQuantity, "Quantity must be greater than zero.");
+
+        var ownsTransaction = context.Database.CurrentTransaction is null;
+        await using var transaction = ownsTransaction ? await context.Database.BeginTransactionAsync() : null;
+
+        var zoneInfo = await context.Zonas.AsNoTracking().FirstOrDefaultAsync(z => z.Id == request.ZonaId);
+        if (zoneInfo is null) return Fail(ReservationError.ZoneNotFound, "Zone not found.");
+
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT pg_advisory_xact_lock({zoneInfo.EventoId}, {asistenteId})");
+
+        var zone = await context.Zonas
+            .FromSqlRaw("SELECT * FROM \"Zonas\" WHERE \"Id\" = {0} FOR UPDATE", request.ZonaId)
+            .FirstAsync();
+
+        var eventEntity = await context.Eventos.AsNoTracking().FirstAsync(e => e.Id == zone.EventoId);
+        var now = DateTimeOffset.UtcNow;
+
+        if (eventEntity.Estado != "en_venta" || now < eventEntity.VentaAbre || now >= eventEntity.Fecha)
+            return Fail(ReservationError.SaleNotOpen, "Ticket sales are not open for this event.");
+
+        if (request.Cantidad > eventEntity.LimitePorCuenta)
+            return Fail(ReservationError.AccountLimitExceeded,
+                $"Exceeds maximum ticket limit per account ({eventEntity.LimitePorCuenta}) for this event.");
+
+        var soldTickets = await context.Entradas
+            .Where(e => e.ZonaId == zone.Id && e.Estado != "reembolsada" && e.Estado != "anulada")
+            .CountAsync();
+        var activeReservations = await context.Reservas
+            .Where(r => r.ZonaId == zone.Id && r.Estado == "activa" && r.ExpiraEn > now)
+            .SumAsync(r => r.Cantidad);
+
+        var available = zone.Aforo - soldTickets - activeReservations;
+        if (request.Cantidad > available)
+            return Fail(ReservationError.CapacityExceeded,
+                $"Not enough capacity available. Requested: {request.Cantidad}, Available: {Math.Max(available, 0)}");
+
+        var userTickets = await context.Entradas
+            .Where(e => e.EventoId == eventEntity.Id
+                        && (e.CompradorId == asistenteId || e.TitularId == asistenteId)
+                        && e.Estado != "reembolsada" && e.Estado != "anulada")
+            .CountAsync();
+        var userReservations = await context.Reservas
+            .Where(r => r.AsistenteId == asistenteId && r.Estado == "activa" && r.ExpiraEn > now
+                        && context.Zonas.Any(z => z.Id == r.ZonaId && z.EventoId == eventEntity.Id))
+            .SumAsync(r => r.Cantidad);
+
+        if ((long)userTickets + userReservations + request.Cantidad > eventEntity.LimitePorCuenta)
+            return Fail(ReservationError.AccountLimitExceeded,
+                $"Exceeds maximum ticket limit per account ({eventEntity.LimitePorCuenta}) for this event.");
+
+        var phase = await context.FasesPrecio
+            .Where(f => f.ZonaId == zone.Id && f.Desde <= now && now < f.Hasta)
+            .OrderBy(f => f.Desde)
+            .FirstOrDefaultAsync();
+        if (phase is null)
+            return Fail(ReservationError.NoPricePhase, "No active price phase for this zone at the current time.");
+
+        var holdMinutes = cfg.GetValue("Reservations:HoldMinutes", 10);
+        var reservation = new Reserva
         {
-            return new ReservationResultDto(false, "Quantity must be greater than zero.", null, null, null);
-        }
+            AsistenteId = asistenteId,
+            ZonaId = zone.Id,
+            Cantidad = request.Cantidad,
+            CreadaEn = now,
+            ExpiraEn = now.AddMinutes(holdMinutes),
+            Estado = "activa",
+            FasePrecioId = phase.Id,
+            PrecioUnitarioCentesimos = phase.PrecioCentesimos
+        };
+        context.Reservas.Add(reservation);
+        await context.SaveChangesAsync();
 
-        using var transaction = await context.Database.BeginTransactionAsync();
-        try
-        {
-           
-            var zone = await context.Zonas
-                .FromSqlRaw("SELECT * FROM \"Zonas\" WHERE \"Id\" = {0} FOR UPDATE", request.ZonaId)
-                .FirstOrDefaultAsync();
+        if (ownsTransaction) await transaction!.CommitAsync();
 
-            if (zone == null)
-            {
-                return new ReservationResultDto(false, "Zone not found.", null, null, null);
-            }
-
-            var eventEntity = await context.Eventos.FindAsync(zone.EventoId);
-            if (eventEntity == null)
-            {
-                return new ReservationResultDto(false, "Associated event not found.", null, null, null);
-            }
-
-            var now = DateTimeOffset.UtcNow;
-            if (now < eventEntity.VentaAbre)
-            {
-                return new ReservationResultDto(false, "Ticket sales have not opened yet for this event.", null, null, null);
-            }
-
-            int activeReservationsCount = await context.Reservas
-                .Where(r => r.ZonaId == request.ZonaId && r.Estado == "activa" && r.ExpiraEn > now)
-                .SumAsync(r => r.Cantidad);
-
-            int soldTicketsCount = await context.Entradas
-                .Where(e => e.ZonaId == request.ZonaId && e.Estado != "reembolsada" && e.Estado != "anulada")
-                .CountAsync();
-
-            int currentOccupied = activeReservationsCount + soldTicketsCount;
-            int availableQuota = zone.Aforo - currentOccupied;
-
-            if (request.Cantidad > availableQuota)
-            {
-                return new ReservationResultDto(
-                    false, 
-                    $"Not enough capacity available. Requested: {request.Cantidad}, Available: {availableQuota}", 
-                    null, null, null
-                );
-            }
-
-            int userExistingTickets = await context.Entradas
-                .Where(e => e.EventoId == eventEntity.Id && (e.CompradorId == asistenteId || e.TitularId == asistenteId) && e.Estado != "reembolsada")
-                .CountAsync();
-
-            int userActiveReservations = await context.Reservas
-                .Where(r => r.ZonaId == request.ZonaId && r.AsistenteId == asistenteId && r.Estado == "activa" && r.ExpiraEn > now)
-                .SumAsync(r => r.Cantidad);
-
-            if ((userExistingTickets + userActiveReservations + request.Cantidad) > eventEntity.LimitePorCuenta)
-            {
-                return new ReservationResultDto(
-                    false, 
-                    $"Exceeds maximum ticket limit per account ({eventEntity.LimitePorCuenta}) for this event.", 
-                    null, null, null
-                );
-            }
-
-            var activePhase = await context.FasesPrecio
-                .Where(fp => fp.ZonaId == request.ZonaId && fp.Desde <= now && fp.Hasta >= now)
-                .FirstOrDefaultAsync();
-
-            if (activePhase == null)
-            {
-                return new ReservationResultDto(false, "No active price phase found for this zone at the current time.", null, null, null);
-            }
-
-            long unitPrice = activePhase.PrecioCentesimos;
-            long totalPrice = unitPrice * request.Cantidad;
-
-            var reservation = new Reserva
-            {
-                AsistenteId = asistenteId,
-                ZonaId = request.ZonaId,
-                Cantidad = request.Cantidad,
-                CreadaEn = now,
-                ExpiraEn = now.AddMinutes(10),
-                Estado = "activa",
-                FasePrecioId = activePhase.Id,
-                PrecioUnitarioCentesimos = unitPrice
-            };
-
-            context.Reservas.Add(reservation);
-            await context.SaveChangesAsync();
-            await transaction.CommitAsync();
-
-            return new ReservationResultDto(true, "Reservation created successfully.", reservation.Id, totalPrice, reservation.ExpiraEn);
-        }
-        catch (Exception ex)
-        {
-            await transaction.RollbackAsync();
-            return new ReservationResultDto(false, $"An error occurred during reservation: {ex.Message}", null, null, null);
-        }
+        return new ReservationResultDto(ReservationError.None, "Reservation created successfully.",
+            reservation.Id, zone.Id, request.Cantidad, phase.PrecioCentesimos,
+            phase.PrecioCentesimos * request.Cantidad, reservation.ExpiraEn);
     }
+
+    private static ReservationResultDto Fail(ReservationError error, string message) => new(error, message);
 }

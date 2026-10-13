@@ -4,10 +4,13 @@ using Ticketing.Api.Models;
 
 namespace Ticketing.Api.Data;
 
+record SeedMeta(DateTimeOffset ReferenciaTemporal);
+
 record UsuarioSeed(int Id, string Nombre, string Email, string Password, string Rol,
     bool? Activo, int? OrganizadorId, DateTimeOffset? CreadoEn);
 
 record SeedData(
+    SeedMeta Meta,
     List<UsuarioSeed> UsuariosAdministrativos, List<UsuarioSeed> Organizadores,
     List<UsuarioSeed> Staff, List<UsuarioSeed> Asistentes,
     List<Evento> Eventos, List<Zona> Zonas, List<FasePrecio> FasesPrecio,
@@ -17,18 +20,26 @@ record SeedData(
 
 public static class Seeder
 {
-    // Los ids de admin, organizadores y staff chocan con los de asistentes (1..600).
     private const int Offset = 10000;
 
-    public static async Task RunAsync(TicketingDb  db, string path)
+    public static async Task RunAsync(TicketingDb db, string path)
     {
-        if (await db.Usuarios.AnyAsync()) return; // idempotente
+        if (await db.Usuarios.AnyAsync()) return; // idempotente: no vuelve a cargar
 
         var json = await File.ReadAllTextAsync(path);
         var opts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
         var d = JsonSerializer.Deserialize<SeedData>(json, opts)!;
 
-        // Hash una sola vez por contraseña distinta (son datos de prueba)
+       
+        var delta = DateTimeOffset.UtcNow - d.Meta.ReferenciaTemporal;
+        ShiftDates(d.Eventos, delta);
+        ShiftDates(d.FasesPrecio, delta);
+        ShiftDates(d.Reservas, delta);
+        ShiftDates(d.Compras, delta);
+        ShiftDates(d.Entradas, delta);
+        ShiftDates(d.Transferencias, delta);
+        ShiftDates(d.Ingresos, delta);
+
         var hashes = new Dictionary<string, string>();
         string Hash(string pw) => hashes.TryGetValue(pw, out var h)
             ? h : hashes[pw] = BCrypt.Net.BCrypt.HashPassword(pw);
@@ -36,7 +47,9 @@ public static class Seeder
         Usuario ToUser(UsuarioSeed u, bool offset) => new()
         {
             Id = offset ? u.Id + Offset : u.Id,
-            Nombre = u.Nombre, Email = u.Email, Rol = u.Rol,
+            Nombre = u.Nombre,
+            Email = u.Email,
+            Rol = u.Rol,
             Activo = u.Activo ?? true,
             OrganizadorId = u.OrganizadorId is int o ? o + Offset : null,
             CreadoEn = u.CreadoEn ?? DateTimeOffset.UtcNow,
@@ -75,12 +88,23 @@ public static class Seeder
         db.Ingresos.AddRange(d.Ingresos);
         await db.SaveChangesAsync();
 
-        // Como se insertaron ids explícitos, hay que mover las secuencias
         foreach (var t in new[] { "Usuarios", "Eventos", "Zonas", "FasesPrecio", "Puertas",
                                   "Reservas", "Compras", "Entradas", "Transferencias", "Ingresos" })
         {
             await db.Database.ExecuteSqlRawAsync(
                 $"SELECT setval(pg_get_serial_sequence('\"{t}\"','Id'), COALESCE((SELECT MAX(\"Id\") FROM \"{t}\"),1))");
         }
+    }
+
+    private static void ShiftDates<T>(IEnumerable<T> items, TimeSpan delta)
+    {
+        var props = typeof(T).GetProperties()
+            .Where(p => p.PropertyType == typeof(DateTimeOffset) || p.PropertyType == typeof(DateTimeOffset?))
+            .ToList();
+
+        foreach (var item in items)
+            foreach (var p in props)
+                if (p.GetValue(item) is DateTimeOffset date)
+                    p.SetValue(item, date + delta);
     }
 }

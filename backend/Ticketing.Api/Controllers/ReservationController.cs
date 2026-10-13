@@ -1,43 +1,45 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Ticketing.Api.Services;
 
 namespace Ticketing.Api.Controllers;
 
 [ApiController]
 [Route("api/reservas")]
-[Authorize]
+[Authorize(Roles = "asistente")]
+[EnableRateLimiting("purchase")]
 public class ReservationsController(IReservationService reservationService) : ControllerBase
 {
     [HttpPost]
     public async Task<IActionResult> CreateReservation([FromBody] ReserveRequestDto request)
     {
-        var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
-                          ?? User.FindFirst("sub")?.Value;
-
-        if (!int.TryParse(userIdClaim, out var asistenteId))
-        {
+        var claim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (!int.TryParse(claim, out var asistenteId))
             return Unauthorized(new { message = "Invalid authentication token claims." });
-        }
 
         var result = await reservationService.CreateReservationAsync(asistenteId, request);
 
-        if (!result.Success)
+        if (result.Success)
         {
-            if (result.Message.Contains("Not enough capacity") || result.Message.Contains("Exceeds maximum"))
+            return StatusCode(201, new
             {
-                return Conflict(new { message = result.Message });
-            }
-
-            return BadRequest(new { message = result.Message });
+                reservaId = result.ReservaId,
+                zonaId = result.ZonaId,
+                cantidad = result.Cantidad,
+                precioUnitarioCentesimos = result.PrecioUnitarioCentesimos,
+                totalCentesimos = result.TotalCentesimos,
+                expiraEn = result.ExpiraEn
+            });
         }
 
-        return StatusCode(201, new
+        var status = result.Error switch
         {
-            reservaId = result.ReservaId,
-            totalCentesimos = result.TotalCentesimos,
-            expiraEn = result.ExpiraEn,
-            message = result.Message
-        });
+            ReservationError.InvalidQuantity => StatusCodes.Status400BadRequest,
+            ReservationError.ZoneNotFound => StatusCodes.Status404NotFound,
+            _ => StatusCodes.Status409Conflict
+        };
+        return StatusCode(status, new { code = result.Error.ToString(), message = result.Message });
     }
 }
