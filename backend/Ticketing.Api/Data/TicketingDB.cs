@@ -17,6 +17,7 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
     public DbSet<Entrada> Entradas => Set<Entrada>();
     public DbSet<Transferencia> Transferencias => Set<Transferencia>();
     public DbSet<Ingreso> Ingresos => Set<Ingreso>();
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     private static void Fk<TDep, TPrin>(ModelBuilder b, Expression<Func<TDep, object?>> fk)
         where TDep : class where TPrin : class =>
@@ -29,10 +30,15 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         b.Entity<Usuario>().HasIndex(x => x.Email).IsUnique();
         b.Entity<Compra>().HasIndex(x => new { x.AsistenteId, x.IdempotencyKey }).IsUnique();
         b.Entity<Ingreso>().HasIndex(x => x.ClientScanId).IsUnique();
+        b.Entity<RefreshToken>().HasIndex(x => x.TokenHash).IsUnique();
+
 
         b.Entity<Entrada>().HasIndex(x => new { x.ZonaId, x.Estado });
         b.Entity<Reserva>().HasIndex(x => new { x.ZonaId, x.Estado, x.ExpiraEn });
         b.Entity<Ingreso>().HasIndex(x => x.EntradaId);
+        b.Entity<RefreshToken>().HasIndex(x => x.UsuarioId);
+
+
 
         Fk<Evento, Usuario>(b, x => x.OrganizadorId);
         Fk<Zona, Evento>(b, x => x.EventoId);
@@ -52,6 +58,7 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         Fk<Ingreso, Entrada>(b, x => x.EntradaId);
         Fk<Ingreso, Puerta>(b, x => x.PuertaId);
         Fk<Ingreso, Usuario>(b, x => x.StaffId);
+        Fk<RefreshToken, Usuario>(b, x => x.UsuarioId);
 
     }
 }

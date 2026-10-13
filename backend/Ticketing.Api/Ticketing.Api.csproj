@@ -1,9 +1,10 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>afab65ac-0029-4d48-958b-7654bf01c62f</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -11,6 +12,7 @@
     <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
   </None>
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

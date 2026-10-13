@@ -122,3 +122,14 @@ public class Ingreso
     public DateTimeOffset? SincronizadoEn { get; set; }
     public string Resultado { get; set; } = "";
 }
+
+public class RefreshToken
+{
+    public Guid Id { get; set; }
+    public int UsuarioId { get; set; }
+    public string TokenHash { get; set; } = "";
+    public DateTimeOffset CreadoEn { get; set; }
+    public DateTimeOffset ExpiraEn { get; set; }
+    public DateTimeOffset? RevocadoEn { get; set; }
+    public Guid? ReemplazadoPorId { get; set; }
+}

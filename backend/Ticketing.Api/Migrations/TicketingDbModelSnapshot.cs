@@ -283,6 +283,41 @@ namespace Ticketing.Api.Migrations
                     b.ToTable("Puertas");
                 });
 
+            modelBuilder.Entity("Ticketing.Api.Models.RefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreadoEn")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiraEn")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ReemplazadoPorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("RevocadoEn")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("UsuarioId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("UsuarioId");
+
+                    b.ToTable("RefreshTokens");
+                });
+
             modelBuilder.Entity("Ticketing.Api.Models.Reserva", b =>
                 {
                     b.Property<int>("Id")
@@ -526,6 +561,15 @@ namespace Ticketing.Api.Migrations
                     b.HasOne("Ticketing.Api.Models.Evento", null)
                         .WithMany()
                         .HasForeignKey("EventoId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Ticketing.Api.Models.RefreshToken", b =>
+                {
+                    b.HasOne("Ticketing.Api.Models.Usuario", null)
+                        .WithMany()
+                        .HasForeignKey("UsuarioId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
