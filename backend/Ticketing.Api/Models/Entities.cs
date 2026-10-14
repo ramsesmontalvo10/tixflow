@@ -133,3 +133,14 @@ public class RefreshToken
     public DateTimeOffset? RevocadoEn { get; set; }
     public Guid? ReemplazadoPorId { get; set; }
 }
+
+public class IdempotencyKey
+{
+    public int UsuarioId { get; set; }
+    public string Endpoint { get; set; } = "";
+    public string Clave { get; set; } = "";
+    public string HashCuerpo { get; set; } = "";
+    public int? StatusCode { get; set; }
+    public string? Respuesta { get; set; }
+    public DateTimeOffset CreadaEn { get; set; }
+}

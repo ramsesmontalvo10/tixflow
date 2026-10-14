@@ -213,6 +213,35 @@ namespace Ticketing.Api.Migrations
                     b.ToTable("FasesPrecio");
                 });
 
+            modelBuilder.Entity("Ticketing.Api.Models.IdempotencyKey", b =>
+                {
+                    b.Property<int>("UsuarioId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Endpoint")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Clave")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("CreadaEn")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("HashCuerpo")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Respuesta")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("StatusCode")
+                        .HasColumnType("integer");
+
+                    b.HasKey("UsuarioId", "Endpoint", "Clave");
+
+                    b.ToTable("IdempotencyKeys");
+                });
+
             modelBuilder.Entity("Ticketing.Api.Models.Ingreso", b =>
                 {
                     b.Property<int>("Id")

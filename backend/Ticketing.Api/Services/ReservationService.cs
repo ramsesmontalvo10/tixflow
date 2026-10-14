@@ -7,6 +7,7 @@ namespace Ticketing.Api.Services;
 public interface IReservationService
 {
     Task<ReservationResultDto> CreateReservationAsync(int asistenteId, ReserveRequestDto request);
+    Task<CancelOutcome> CancelReservationAsync(int asistenteId, int reservaId);
 }
 
 public record ReserveRequestDto(int ZonaId, int Cantidad);
@@ -15,6 +16,8 @@ public enum ReservationError
 {
     None, InvalidQuantity, ZoneNotFound, SaleNotOpen, NoPricePhase, CapacityExceeded, AccountLimitExceeded
 }
+
+public enum CancelOutcome { Cancelled, NotFound, AlreadyPaid }
 
 public record ReservationResultDto(
     ReservationError Error,
@@ -112,6 +115,21 @@ public class ReservationService(TicketingDb context, IConfiguration cfg) : IRese
         return new ReservationResultDto(ReservationError.None, "Reservation created successfully.",
             reservation.Id, zone.Id, request.Cantidad, phase.PrecioCentesimos,
             phase.PrecioCentesimos * request.Cantidad, reservation.ExpiraEn);
+    }
+
+    public async Task<CancelOutcome> CancelReservationAsync(int asistenteId, int reservaId)
+    {
+        var rows = await context.Reservas
+            .Where(r => r.Id == reservaId && r.AsistenteId == asistenteId && r.Estado == "activa")
+            .ExecuteUpdateAsync(s => s.SetProperty(r => r.Estado, "cancelada"));
+        if (rows == 1) return CancelOutcome.Cancelled;
+
+        var current = await context.Reservas.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == reservaId && r.AsistenteId == asistenteId);
+        if (current is null) return CancelOutcome.NotFound;
+        if (current.Estado == "consumida") return CancelOutcome.AlreadyPaid;
+
+        return CancelOutcome.Cancelled;
     }
 
     private static ReservationResultDto Fail(ReservationError error, string message) => new(error, message);

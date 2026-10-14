@@ -18,6 +18,7 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
     public DbSet<Transferencia> Transferencias => Set<Transferencia>();
     public DbSet<Ingreso> Ingresos => Set<Ingreso>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<IdempotencyKey> IdempotencyKeys => Set<IdempotencyKey>();
 
     private static void Fk<TDep, TPrin>(ModelBuilder b, Expression<Func<TDep, object?>> fk)
         where TDep : class where TPrin : class =>
@@ -26,6 +27,7 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         protected override void OnModelCreating(ModelBuilder  b)
     {
         b.Entity<AsignacionStaff>().HasKey(a => new { a.EventoId, a.StaffId });
+        b.Entity<IdempotencyKey>().HasKey(k => new { k.UsuarioId, k.Endpoint, k.Clave });
 
         b.Entity<Usuario>().HasIndex(x => x.Email).IsUnique();
         b.Entity<Compra>().HasIndex(x => new { x.AsistenteId, x.IdempotencyKey }).IsUnique();

@@ -18,6 +18,9 @@ builder.Services.AddDbContext<TicketingDb>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
 
 builder.Services.AddScoped<IReservationService, ReservationService>();
+builder.Services.AddScoped<IPaymentService, PaymentService>();
+builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
+builder.Services.AddHostedService<ReservationExpiryService>();
 
 // ---------- Autenticación (JWT) ----------
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -49,10 +52,12 @@ builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
+    // Autenticación: por IP (todavía no se sabe quién es el usuario)
     o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = authLimit, Window = TimeSpan.FromMinutes(1) }));
 
+    // Compra: por usuario autenticado (si no hay usuario, por IP)
     o.AddPolicy("purchase", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -61,6 +66,7 @@ builder.Services.AddRateLimiter(o =>
 
 var app = builder.Build();
 
+// ---------- Migraciones y semilla ----------
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<TicketingDb>();
@@ -68,6 +74,7 @@ using (var scope = app.Services.CreateScope())
     await Seeder.RunAsync(db, Path.Combine(AppContext.BaseDirectory, "Data", "seed.json"));
 }
 
+// ---------- Pipeline HTTP (el orden importa) ----------
 app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
