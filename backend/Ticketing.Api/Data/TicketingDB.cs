@@ -19,6 +19,8 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
     public DbSet<Ingreso> Ingresos => Set<Ingreso>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<IdempotencyKey> IdempotencyKeys => Set<IdempotencyKey>();
+    public DbSet<RevocacionEntrada> RevocacionesEntrada => Set<RevocacionEntrada>();
+    public DbSet<DispositivoEscaner> DispositivosEscaner => Set<DispositivoEscaner>();
 
     private static void Fk<TDep, TPrin>(ModelBuilder b, Expression<Func<TDep, object?>> fk)
         where TDep : class where TPrin : class =>
@@ -28,6 +30,10 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
     {
         b.Entity<AsignacionStaff>().HasKey(a => new { a.EventoId, a.StaffId });
         b.Entity<IdempotencyKey>().HasKey(k => new { k.UsuarioId, k.Endpoint, k.Clave });
+        b.Entity<RevocacionEntrada>().HasKey(r => r.EntradaId);
+        b.Entity<DispositivoEscaner>().HasKey(d => d.Id);
+
+
 
         b.Entity<Usuario>().HasIndex(x => x.Email).IsUnique();
         b.Entity<Compra>().HasIndex(x => new { x.AsistenteId, x.IdempotencyKey }).IsUnique();
@@ -39,6 +45,10 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         b.Entity<Reserva>().HasIndex(x => new { x.ZonaId, x.Estado, x.ExpiraEn });
         b.Entity<Ingreso>().HasIndex(x => x.EntradaId);
         b.Entity<RefreshToken>().HasIndex(x => x.UsuarioId);
+        b.Entity<RevocacionEntrada>().HasIndex(r => r.RevocadaEn);
+        b.Entity<DispositivoEscaner>().HasIndex(d => new { d.EventoId, d.PuertaId });
+
+
 
 
 
@@ -61,6 +71,10 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         Fk<Ingreso, Puerta>(b, x => x.PuertaId);
         Fk<Ingreso, Usuario>(b, x => x.StaffId);
         Fk<RefreshToken, Usuario>(b, x => x.UsuarioId);
+        Fk<RevocacionEntrada, Entrada>(b, x => x.EntradaId);
+        Fk<DispositivoEscaner, Usuario>(b, x => x.UsuarioId);
+        Fk<DispositivoEscaner, Evento>(b, x => x.EventoId);
+        Fk<DispositivoEscaner, Puerta>(b, x => x.PuertaId);
 
     }
 }

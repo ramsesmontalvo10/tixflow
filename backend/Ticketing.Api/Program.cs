@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Ticketing.Api.Data;
 using Ticketing.Api.Services;
+using Ticketing.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,6 +22,7 @@ builder.Services.AddScoped<IReservationService, ReservationService>();
 builder.Services.AddScoped<IPaymentService, PaymentService>();
 builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
 builder.Services.AddHostedService<ReservationExpiryService>();
+builder.Services.AddScoped<IRotatingTokenService, RotatingTokenService>();
 
 // ---------- Autenticación (JWT) ----------
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -28,6 +30,7 @@ if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
     throw new InvalidOperationException("Falta Jwt:Key (mínimo 32 caracteres)");
 
 builder.Services.AddSingleton<TokenService>();
+builder.Services.AddSingleton<IEd25519Signer, Ed25519SignerService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o => o.TokenValidationParameters = new TokenValidationParameters
     {
@@ -88,4 +91,19 @@ app.UseRateLimiter();
 app.UseAuthorization();    
 app.MapControllers();
 
+// ---------- Debug (solo Development) ----------
+if (app.Environment.IsDevelopment())
+{
+    app.MapPost("/api/_debug/verify-rotating", async (
+        IRotatingTokenService rotating,
+        VerifyRotatingRequest req) =>
+    {
+        var (ok, error) = await rotating.VerifyAsync(req.TicketId, req.Window, req.SignatureBase64);
+        return Results.Ok(new { ok, error });
+    });
+}
+
 app.Run();
+
+// Tipos declarados después de los top-level statements
+public record VerifyRotatingRequest(int TicketId, long Window, string SignatureBase64);

@@ -92,6 +92,40 @@ namespace Ticketing.Api.Migrations
                     b.ToTable("Compras");
                 });
 
+            modelBuilder.Entity("Ticketing.Api.Models.DispositivoEscaner", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("EventoId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("PuertaId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("RegistradoEn")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("UltimaSync")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UsuarioId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PuertaId");
+
+                    b.HasIndex("UsuarioId");
+
+                    b.HasIndex("EventoId", "PuertaId");
+
+                    b.ToTable("DispositivosEscaner");
+                });
+
             modelBuilder.Entity("Ticketing.Api.Models.Entrada", b =>
                 {
                     b.Property<int>("Id")
@@ -389,6 +423,25 @@ namespace Ticketing.Api.Migrations
                     b.ToTable("Reservas");
                 });
 
+            modelBuilder.Entity("Ticketing.Api.Models.RevocacionEntrada", b =>
+                {
+                    b.Property<int>("EntradaId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Motivo")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("RevocadaEn")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("EntradaId");
+
+                    b.HasIndex("RevocadaEn");
+
+                    b.ToTable("RevocacionesEntrada");
+                });
+
             modelBuilder.Entity("Ticketing.Api.Models.Transferencia", b =>
                 {
                     b.Property<int>("Id")
@@ -525,6 +578,27 @@ namespace Ticketing.Api.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("Ticketing.Api.Models.DispositivoEscaner", b =>
+                {
+                    b.HasOne("Ticketing.Api.Models.Evento", null)
+                        .WithMany()
+                        .HasForeignKey("EventoId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Ticketing.Api.Models.Puerta", null)
+                        .WithMany()
+                        .HasForeignKey("PuertaId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Ticketing.Api.Models.Usuario", null)
+                        .WithMany()
+                        .HasForeignKey("UsuarioId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Ticketing.Api.Models.Entrada", b =>
                 {
                     b.HasOne("Ticketing.Api.Models.Compra", null)
@@ -614,6 +688,15 @@ namespace Ticketing.Api.Migrations
                     b.HasOne("Ticketing.Api.Models.Zona", null)
                         .WithMany()
                         .HasForeignKey("ZonaId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Ticketing.Api.Models.RevocacionEntrada", b =>
+                {
+                    b.HasOne("Ticketing.Api.Models.Entrada", null)
+                        .WithMany()
+                        .HasForeignKey("EntradaId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

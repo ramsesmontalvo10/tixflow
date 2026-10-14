@@ -144,3 +144,20 @@ public class IdempotencyKey
     public string? Respuesta { get; set; }
     public DateTimeOffset CreadaEn { get; set; }
 }
+
+public class RevocacionEntrada
+{
+    public int EntradaId { get; set; }
+    public DateTimeOffset RevocadaEn { get; set; }
+    public string Motivo { get; set; } = ""; 
+}
+
+public class DispositivoEscaner
+{
+    public int Id { get; set; }
+    public int UsuarioId { get; set; }
+    public int EventoId { get; set; }
+    public int PuertaId { get; set; }
+    public DateTimeOffset RegistradoEn { get; set; }
+    public DateTimeOffset? UltimaSync { get; set; }
+}
