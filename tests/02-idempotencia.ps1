@@ -51,7 +51,7 @@ function Invoke-ExpectError($method, $url, $headers, $body) {
 Write-Host "== 02 - Invariante 2: idempotencia ==" -ForegroundColor Cyan
 
 # 1) Login
-$login = Invoke-RestMethod "$base/auth/login" -Method Post -ContentType $j `
+$login = Invoke-RestMethod "$base/api/auth/login" -Method Post -ContentType $j `
     -Body '{"email":"asistente1@correo.test","password":"Asistente2026!"}'
 $auth = @{ Authorization = "Bearer $($login.accessToken)" }
 Write-Host "Login OK" -ForegroundColor Gray

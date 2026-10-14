@@ -23,6 +23,7 @@ builder.Services.AddScoped<IPaymentService, PaymentService>();
 builder.Services.AddScoped<IIdempotencyService, IdempotencyService>();
 builder.Services.AddHostedService<ReservationExpiryService>();
 builder.Services.AddScoped<IRotatingTokenService, RotatingTokenService>();
+builder.Services.AddScoped<IScannerService, ScannerService>();
 
 // ---------- Autenticación (JWT) ----------
 var jwtKey = builder.Configuration["Jwt:Key"];
@@ -55,12 +56,10 @@ builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-    // Autenticación: por IP (todavía no se sabe quién es el usuario)
     o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = authLimit, Window = TimeSpan.FromMinutes(1) }));
 
-    // Compra: por usuario autenticado (si no hay usuario, por IP)
     o.AddPolicy("purchase", ctx => RateLimitPartition.GetFixedWindowLimiter(
         ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",

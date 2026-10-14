@@ -54,9 +54,9 @@ function Invoke-ExpectError($method, $url, $headers, $body) {
 Write-Host "== 04 - Invariante 3: token rotativo + transferencia ==" -ForegroundColor Cyan
 
 # ---------- Setup: login de Ana y Beto ----------
-$anaLogin = Invoke-RestMethod "$base/auth/login" -Method Post -ContentType $j `
+$anaLogin = Invoke-RestMethod "$base/api/auth/login" -Method Post -ContentType $j `
     -Body '{"email":"asistente1@correo.test","password":"Asistente2026!"}'
-$betoLogin = Invoke-RestMethod "$base/auth/login" -Method Post -ContentType $j `
+$betoLogin = Invoke-RestMethod "$base/api/auth/login" -Method Post -ContentType $j `
     -Body '{"email":"asistente2@correo.test","password":"Asistente2026!"}'
 Write-Host "Login OK (Ana + Beto)" -ForegroundColor Gray
 

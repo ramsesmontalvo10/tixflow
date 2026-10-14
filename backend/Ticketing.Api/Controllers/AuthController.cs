@@ -37,7 +37,7 @@ public record AuthResponse(
 );
 
 [ApiController]
-[Route("auth")]
+[Route("api/auth")]
 [EnableRateLimiting("auth")]
 public class AuthController(TicketingDb db, TokenService tokens, IConfiguration cfg) : ControllerBase
 {

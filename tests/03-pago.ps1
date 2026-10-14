@@ -46,7 +46,7 @@ function Invoke-ExpectError($method, $url, $headers) {
 Write-Host "== 03 - Invariante 2: pago con idempotencia ==" -ForegroundColor Cyan
 
 # 1) Login
-$login = Invoke-RestMethod "$base/auth/login" -Method Post -ContentType $j `
+$login = Invoke-RestMethod "$base/api/auth/login" -Method Post -ContentType $j `
     -Body '{"email":"asistente1@correo.test","password":"Asistente2026!"}'
 Write-Host "Login OK" -ForegroundColor Gray
 
