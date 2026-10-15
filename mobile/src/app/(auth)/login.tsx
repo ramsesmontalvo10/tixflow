@@ -64,7 +64,9 @@ export default function LoginScreen() {
       }
 
       await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, result.accessToken);
-      router.replace(result.rol.toLowerCase() === 'staff' ? '/scanner' : '/wallet');
+      router.replace(
+        result.rol.toLowerCase() === 'staff' ? '/(staff)' : '/(assistant)',
+      );
     } catch (error) {
       Alert.alert(
         'Connection error',

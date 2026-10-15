@@ -25,9 +25,18 @@ interface Ticket {
   estado: string;
 }
 
+type TicketStatus = 'pagada' | 'usada' | 'reembolsada' | 'transferida';
+
 interface TokenBlockResponse {
   tokens: RotatingToken[];
 }
+
+const TICKET_STATUS_STYLES: Record<TicketStatus, { background: string; text: string }> = {
+  pagada: { background: '#dcfce7', text: '#166534' },
+  usada: { background: '#e5e7eb', text: '#4b5563' },
+  reembolsada: { background: '#fee2e2', text: '#b91c1c' },
+  transferida: { background: '#dbeafe', text: '#1d4ed8' },
+};
 
 const SEED_DEMO_TICKET: Ticket = {
   id: 3069,
@@ -213,7 +222,23 @@ export default function WalletScreen() {
           Zona {item.zonaId} · Entrada #{item.id}
         </Text>
       </View>
-      <Text style={styles.ticketStatus}>{item.estado.toUpperCase()}</Text>
+      {(() => {
+        const status = item.estado.trim().toLowerCase();
+        const knownStatus = Object.hasOwn(TICKET_STATUS_STYLES, status)
+          ? (status as TicketStatus)
+          : null;
+        const colors = knownStatus
+          ? TICKET_STATUS_STYLES[knownStatus]
+          : TICKET_STATUS_STYLES.usada;
+
+        return (
+          <View style={[styles.ticketStatusBadge, { backgroundColor: colors.background }]}>
+            <Text style={[styles.ticketStatusText, { color: colors.text }]}>
+              {knownStatus?.toUpperCase() ?? item.estado.toUpperCase()}
+            </Text>
+          </View>
+        );
+      })()}
     </TouchableOpacity>
   );
 
@@ -225,11 +250,18 @@ export default function WalletScreen() {
             <Text style={styles.eyebrow}>TIXFLOW · ASISTENTE</Text>
             <Text style={styles.title}>Mi billetera</Text>
           </View>
-          <TouchableOpacity
-            accessibilityRole="button"
-            onPress={() => router.replace('/(auth)/login')}>
-            <Text style={styles.link}>Salir</Text>
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              onPress={() => router.replace('/(assistant)')}>
+              <Text style={styles.link}>Cartelera</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              onPress={() => router.replace('/(auth)/login')}>
+              <Text style={styles.link}>Salir</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -294,6 +326,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
     marginTop: 12,
   },
+  headerActions: { alignItems: 'flex-end', gap: 12 },
   eyebrow: { color: '#12a99d', fontSize: 11, fontWeight: '800', letterSpacing: 1.2 },
   title: { color: '#092333', fontSize: 30, fontWeight: '800', marginTop: 4 },
   link: { color: '#0b8f87', fontSize: 15, fontWeight: '700' },
@@ -323,7 +356,8 @@ const styles = StyleSheet.create({
   ticketInfo: { flex: 1 },
   eventTitle: { color: '#092333', fontSize: 15, fontWeight: '700' },
   zoneText: { color: '#687b89', fontSize: 13, marginTop: 5 },
-  ticketStatus: { color: '#0b8f87', fontSize: 10, fontWeight: '800' },
+  ticketStatusBadge: { borderRadius: 999, marginLeft: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  ticketStatusText: { fontSize: 10, fontWeight: '800' },
   qrPanel: {
     alignItems: 'center',
     backgroundColor: '#fff',
