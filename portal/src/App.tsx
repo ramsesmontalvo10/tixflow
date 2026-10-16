@@ -1,5 +1,6 @@
-import { FormEvent, ReactNode, useEffect, useState } from 'react';
+import { createContext, FormEvent, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 import {
+  AdminEvent,
   AdminTicket,
   ApiError,
   AuditLog,
@@ -8,6 +9,7 @@ import {
   fetchEventAccessLogs,
   fetchEventAuditLogs,
   fetchEventIncidents,
+  fetchAdminEvents,
   fetchSalesSummary,
   refundAdminTicket,
   SalesSummary,
@@ -20,6 +22,27 @@ import {
 } from './api';
 
 type TabId = 'eventos' | 'ventas' | 'entradas' | 'accesos' | 'incidentes' | 'auditoria';
+
+interface EventSelection {
+  events: AdminEvent[];
+  eventsLoading: boolean;
+  eventsError: string;
+  refreshEvents: () => Promise<void>;
+  eventId: string;
+  setEventId: (eventId: string) => void;
+  activeEventId: number | null;
+  setActiveEventId: (eventId: number) => void;
+}
+
+const EventSelectionContext = createContext<EventSelection | null>(null);
+
+function useEventSelection() {
+  const selection = useContext(EventSelectionContext);
+  if (!selection) {
+    throw new Error('Event selection context is unavailable.');
+  }
+  return selection;
+}
 
 const NAV_ITEMS: { id: TabId; icon: string; label: string; description: string }[] = [
   { id: 'eventos', icon: '⚙', label: 'Eventos', description: 'Configuración' },
@@ -123,7 +146,7 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
       <section className="login-card">
         <div className="brand-mark">t</div>
         <p className="eyebrow">TIXFLOW · ORGANIZADORES</p>
-        <h1>Bienvenido de vuelta</h1>
+        <h1>Bienvenidos</h1>
         <p className="muted">Inicia sesión para administrar tus eventos.</p>
         <form className="stack-form" onSubmit={handleSubmit}>
           <label>
@@ -201,6 +224,7 @@ function SectionHeading({
 }
 
 function EventsTab() {
+  const { refreshEvents, setEventId, setActiveEventId } = useEventSelection();
   const [draft, setDraft] = useState<EventDraft>(EMPTY_DRAFT);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -265,6 +289,13 @@ function EventsTab() {
       }, token);
       setNotice(`Evento "${created.nombre}" creado correctamente (ID ${created.id}).`);
       setDraft(EMPTY_DRAFT);
+      try {
+        await refreshEvents();
+        setEventId(String(created.id));
+        setActiveEventId(created.id);
+      } catch {
+        setNotice((current) => `${current} No se pudo actualizar el selector de eventos.`);
+      }
     } catch (submitError) {
       if (submitError instanceof ApiError && submitError.status === 401) {
         clearAccessToken();
@@ -354,19 +385,24 @@ function EventsTab() {
 
 function SalesTab() {
   const token = readAccessToken();
-  const [eventId, setEventId] = useState('6');
-  const [activeEventId, setActiveEventId] = useState<number | null>(null);
+  const { eventId, setEventId, activeEventId, setActiveEventId } = useEventSelection();
   const [summary, setSummary] = useState<SalesSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [forbidden, setForbidden] = useState(false);
 
   useEffect(() => {
-    if (activeEventId === null || !token) return;
+    if (activeEventId === null || !token) {
+      setSummary(null);
+      return;
+    }
     let cancelled = false;
 
     const refresh = async () => {
       setLoading(true);
+      setSummary(null);
+      setError('');
+      setForbidden(false);
       try {
         const result = await fetchSalesSummary(activeEventId, token);
         if (!cancelled) {
@@ -404,7 +440,13 @@ function SalesTab() {
         <span className={`status-pill ${summary ? 'status-live' : 'status-muted'}`}><span className="status-dot" />{summary ? 'Actualización cada 15 s' : 'Selecciona un evento'}</span>
       </SectionHeading>
       <section className="panel">
-        <form className="event-filter" onSubmit={(event) => { event.preventDefault(); setForbidden(false); setError(''); setActiveEventId(Number(eventId)); }}>
+        <form className="event-filter" onSubmit={(event) => {
+          event.preventDefault();
+          setForbidden(false);
+          setError('');
+          setSummary(null);
+          setActiveEventId(Number(eventId));
+        }}>
           <label>ID del evento<input type="number" min="1" required value={eventId} onChange={(event) => setEventId(event.target.value)} /></label>
           <button className="button button-primary" type="submit" disabled={loading || !token}>{loading ? 'Consultando…' : 'Consultar ventas'}</button>
         </form>
@@ -434,7 +476,7 @@ function SalesTab() {
                 <tr key={zone.zonaId}><td>#{summary.eventoId}</td><td>{zone.zona}</td><td>{zone.aforo}</td><td>{zone.entradasOcupadas}</td><td>{zone.reservasVigentes}</td><td>{zone.disponibles}</td></tr>
               ))}
               {summary && summary.disponibilidadPorZona.length === 0 ? <tr><td className="empty-cell" colSpan={6}>Este evento aún no tiene zonas configuradas.</td></tr> : null}
-              {!summary ? <tr><td className="empty-cell" colSpan={6}>Introduce un ID de evento para cargar las métricas.</td></tr> : null}
+              {!summary ? <tr><td className="empty-cell" colSpan={6}>Introduce el ID de uno de tus eventos para cargar las métricas.</td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -500,23 +542,28 @@ function RefundModal({
 
 function TicketsTab() {
   const token = readAccessToken();
-  const [eventId, setEventId] = useState('6');
+  const { eventId, setEventId, setActiveEventId } = useEventSelection();
   const [email, setEmail] = useState('');
   const [tickets, setTickets] = useState<AdminTicket[]>([]);
   const [searched, setSearched] = useState(false);
   const [refundTicketId, setRefundTicketId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [forbidden, setForbidden] = useState(false);
 
   async function searchTickets(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setActiveEventId(Number(eventId));
     await refreshTickets();
   }
 
   async function refreshTickets() {
-    if (!token) return;
+    if (!token || !eventId) return;
     setLoading(true);
+    setTickets([]);
+    setSearched(false);
     setError('');
+    setForbidden(false);
     try {
       setTickets(await searchAdminTickets(Number(eventId), email.trim(), token));
       setSearched(true);
@@ -524,6 +571,10 @@ function TicketsTab() {
       if (requestError instanceof ApiError && requestError.status === 401) {
         clearAccessToken();
         window.location.reload();
+      }
+      if (requestError instanceof ApiError && requestError.status === 403) {
+        setForbidden(true);
+        setTickets([]);
       }
       setError(requestError instanceof Error ? requestError.message : 'No se pudieron buscar las entradas.');
       setSearched(false);
@@ -545,7 +596,7 @@ function TicketsTab() {
           <button className="button button-primary" type="submit" disabled={loading || !token}>{loading ? 'Buscando…' : 'Buscar entradas'}</button>
         </form>
       </section>
-      {error ? <p className="callout callout-error">{error}</p> : null}
+      {forbidden ? <ForbiddenNotice /> : error ? <p className="callout callout-error">{error}</p> : null}
       <section className="panel">
         <div className="panel-heading"><div><h3>Resultados</h3><p>Entradas asociadas al correo consultado</p></div></div>
         <div className="table-scroll">
@@ -561,7 +612,7 @@ function TicketsTab() {
                 </tr>
               ))}
               {searched && tickets.length === 0 ? <tr><td className="empty-cell" colSpan={5}>No se encontraron entradas para esos criterios.</td></tr> : null}
-              {!searched ? <tr><td className="empty-cell" colSpan={5}>Indica un evento y, opcionalmente, un correo para buscar entradas.</td></tr> : null}
+              {!searched ? <tr><td className="empty-cell" colSpan={5}>Selecciona un evento y, opcionalmente, un correo para buscar entradas.</td></tr> : null}
             </tbody>
           </table>
         </div>
@@ -579,22 +630,30 @@ function TicketsTab() {
 
 function AccessesTab() {
   const token = readAccessToken();
-  const [eventId, setEventId] = useState('6');
+  const { eventId, setEventId, setActiveEventId } = useEventSelection();
   const [accessLogs, setAccessLogs] = useState<AccessLogs | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [forbidden, setForbidden] = useState(false);
 
   async function loadAccessLogs(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setActiveEventId(Number(eventId));
     if (!token) return;
     setLoading(true);
+    setAccessLogs(null);
     setError('');
+    setForbidden(false);
     try {
       setAccessLogs(await fetchEventAccessLogs(Number(eventId), token));
     } catch (requestError) {
       if (requestError instanceof ApiError && requestError.status === 401) {
         clearAccessToken();
         window.location.reload();
+      }
+      if (requestError instanceof ApiError && requestError.status === 403) {
+        setForbidden(true);
+        setAccessLogs(null);
       }
       setError(requestError instanceof Error ? requestError.message : 'No se pudieron cargar los accesos.');
     } finally {
@@ -611,7 +670,7 @@ function AccessesTab() {
           <button className="button button-primary" disabled={loading || !token}>{loading ? 'Consultando…' : 'Actualizar accesos'}</button>
         </form>
       </section>
-      {error ? <p className="callout callout-error">{error}</p> : null}
+      {forbidden ? <ForbiddenNotice /> : error ? <p className="callout callout-error">{error}</p> : null}
       <div className="metric-grid metric-grid-three">
         {[
           ['Personas ingresadas', accessLogs?.aforoActual.toLocaleString('es-PA') ?? '—', 'Entradas únicas con escaneo aceptado'],
@@ -641,7 +700,7 @@ function AccessesTab() {
               <tr key={device.deviceId}><td>#{device.deviceId}</td><td>{device.puerta}</td><td>{device.staff}</td><td>{new Date(device.registradoEn).toLocaleString('es-PA')}</td><td>{device.ultimaSync ? new Date(device.ultimaSync).toLocaleString('es-PA') : 'Aún sin sincronizar'}</td></tr>
             ))}
             {accessLogs && accessLogs.dispositivos.length === 0 ? <tr><td className="empty-cell" colSpan={5}>No hay dispositivos registrados para este evento.</td></tr> : null}
-            {!accessLogs ? <tr><td className="empty-cell" colSpan={5}>Carga un evento para consultar los dispositivos.</td></tr> : null}
+            {!accessLogs ? <tr><td className="empty-cell" colSpan={5}>Introduce un ID de evento para consultar sus dispositivos.</td></tr> : null}
           </tbody>
         </table></div>
       </section>
@@ -656,7 +715,7 @@ function IncidentsTab({
   token: string;
   onUnauthorized: () => void;
 }) {
-  const [eventId, setEventId] = useState('6');
+  const { eventId, setEventId, setActiveEventId } = useEventSelection();
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -665,7 +724,10 @@ function IncidentsTab({
 
   async function loadIncidents(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setActiveEventId(Number(eventId));
     setLoading(true);
+    setIncidents([]);
+    setLoaded(false);
     setError('');
     setForbidden(false);
     try {
@@ -714,7 +776,7 @@ function IncidentsTab({
               </tr>
             ))}
             {loaded && incidents.length === 0 ? <tr><td className="empty-cell" colSpan={5}>No se encontraron dobles ingresos para este evento.</td></tr> : null}
-            {!loaded && !loading ? <tr><td className="empty-cell" colSpan={5}>Indica un ID de evento y carga sus incidentes.</td></tr> : null}
+            {!loaded && !loading ? <tr><td className="empty-cell" colSpan={5}>Introduce un ID de evento y carga sus incidentes.</td></tr> : null}
           </tbody>
         </table></div>
       </section>
@@ -724,7 +786,7 @@ function IncidentsTab({
 
 function AuditTab() {
   const token = readAccessToken();
-  const [eventId, setEventId] = useState('6');
+  const { eventId, setEventId, setActiveEventId } = useEventSelection();
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -733,8 +795,11 @@ function AuditTab() {
 
   async function loadAuditLogs(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setActiveEventId(Number(eventId));
     if (!token) return;
     setLoading(true);
+    setAuditLogs([]);
+    setLoaded(false);
     setError('');
     setForbidden(false);
     try {
@@ -786,6 +851,43 @@ export default function App() {
   const [token, setToken] = useState<string | null>(() => readAccessToken());
   const [activeTab, setActiveTab] = useState<TabId>('eventos');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [events, setEvents] = useState<AdminEvent[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState('');
+  const [eventId, setEventId] = useState('');
+  const [activeEventId, setActiveEventId] = useState<number | null>(null);
+
+  const refreshEvents = useCallback(async () => {
+    if (!token) return;
+    setEventsLoading(true);
+    setEventsError('');
+    try {
+      const result = await fetchAdminEvents(token);
+      setEvents(result);
+      setEventId((current) =>
+        current && result.some((item) => item.id === Number(current))
+          ? current
+          : result[0] ? String(result[0].id) : '',
+      );
+    } catch (loadError) {
+      const message = loadError instanceof ApiError && loadError.status === 405
+        ? 'La API activa todavía no tiene disponible el listado de eventos (HTTP 405). Reinicia o reconstruye el backend y vuelve a cargar.'
+        : loadError instanceof Error
+          ? loadError.message
+          : 'No se pudieron cargar tus eventos.';
+      setEventsError(message);
+      throw loadError;
+    } finally {
+      setEventsLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    void refreshEvents().catch(() => {
+      // The error is displayed beside the event selector.
+    });
+  }, [refreshEvents, token]);
 
   function handleLogout() {
     clearAccessToken();
@@ -807,6 +909,17 @@ export default function App() {
   }
 
   return (
+    <EventSelectionContext.Provider
+      value={{
+        events,
+        eventsLoading,
+        eventsError,
+        refreshEvents,
+        eventId,
+        setEventId,
+        activeEventId,
+        setActiveEventId,
+      }}>
     <div className="app-shell">
       <aside className={`sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-brand"><span className="brand-mark brand-mark-small">t</span><span>tixflow<span className="brand-period">.</span></span></div>
@@ -844,10 +957,24 @@ export default function App() {
             <div><p className="eyebrow">PANEL DE ORGANIZADOR</p><h1>{TAB_TITLES[activeTab]}</h1></div>
             <div className="date-label"><span>◷</span> {new Date().toLocaleDateString('es-PA', { dateStyle: 'long' })}</div>
           </div>
+          <p className="organizer-event-ids" aria-live="polite">
+            <span>Eventos a tu cargo:</span>{' '}
+            <strong>
+              {eventsLoading
+                ? 'Cargando…'
+                : eventsError
+                  ? 'No disponibles'
+                  : events.length > 0
+                    ? events.map((item) => item.id).join(', ')
+                    : 'Ninguno'}
+            </strong>
+          </p>
+          {eventsError ? <p className="callout callout-error" role="alert">{eventsError}</p> : null}
           {renderActiveTab()}
           <footer className="page-footer"><span>© 2026 TixFlow</span><span>Portal de administración · API local</span></footer>
         </div>
       </main>
     </div>
+    </EventSelectionContext.Provider>
   );
 }

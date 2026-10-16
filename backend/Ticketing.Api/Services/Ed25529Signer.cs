@@ -9,7 +9,7 @@ public interface IEd25519Signer
     byte[] Sign(string payload);
     bool Verify(string payload, byte[] signature);
     string GetPublicKeyBase64();
-    string BuildPayload(int entradaId, long ventana);
+    string BuildPayload(int entradaId, int eventoId, long ventana);
 }
 
 public class Ed25519SignerService : IEd25519Signer
@@ -41,7 +41,8 @@ public class Ed25519SignerService : IEd25519Signer
         logger.LogInformation("Ed25519 public key: {Pub}", GetPublicKeyBase64());
     }
 
-    public string BuildPayload(int entradaId, long ventana) => $"{entradaId}:{ventana}";
+    public string BuildPayload(int entradaId, int eventoId, long ventana) =>
+        $"{entradaId}:{eventoId}:{ventana}";
 
     public byte[] Sign(string payload)
     {

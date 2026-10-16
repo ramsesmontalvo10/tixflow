@@ -1,6 +1,6 @@
 # TixFlow — Plataforma de venta y control de acceso
 
-Monorepo para venta de entradas, emisión de códigos QR rotativos y administración de eventos. Incluye una app móvil Expo, un portal web React, una API ASP.NET Core y pruebas de reglas de negocio y concurrencia. El escáner móvil valida firmas y conserva lecturas localmente; la sincronización móvil de lotes todavía no está integrada.
+Monorepo para venta de entradas, emisión de códigos QR rotativos y administración de eventos. Incluye una app móvil Expo, un portal web React, una API ASP.NET Core y pruebas de reglas de negocio y concurrencia. El escáner móvil valida firmas, conserva lecturas localmente y sincroniza los escaneos pendientes con el backend cuando hay conectividad.
 
 ## Arquitectura del monorepo
 
@@ -104,11 +104,11 @@ El flujo de pago de esta versión es **simulado**: no integra un proveedor ni pr
 
 El backend firma tokens con Ed25519 y conserva la clave privada en `data/ed25519.key` (en Docker, dentro del volumen persistente `/app/data`). La clave pública se distribuye al escáner mediante `GET /api/scanner/public-key`; el dispositivo verifica firmas, no puede emitirlas.
 
-El payload firmado es `entradaId:ventana`, con una ventana de 30 segundos. La billetera obtiene del backend un bloque de tokens firmados para mostrar los códigos rotativos. En el escáner, la clave pública se descarga y se conserva localmente; la app valida la firma y su ventana temporal y guarda los escaneos y la detección de duplicados en SQLite.
+El payload firmado es `entradaId:eventoId:ventana`, con una ventana de 30 segundos; así un QR no se puede reutilizar en otro evento aunque el dispositivo esté offline. La billetera obtiene del backend un bloque de tokens firmados para mostrar los códigos rotativos. En el escáner, la clave pública se descarga y se conserva localmente; la app valida la firma, el evento y su ventana temporal y guarda los escaneos y la detección de duplicados en SQLite. Los QR emitidos con el formato anterior, que no vinculaba el evento, deben renovarse en una versión actualizada de la app.
 
-**Límite actual importante:** el flujo móvil de staff no registra dispositivos, no sincroniza las filas de `offline_scans` con `/api/scanner/batches` ni descarga revocaciones para aplicarlas al escaneo. Por lo tanto, un escaneo guardado localmente no se refleja en el backend, y las revocaciones recientes no se garantizan durante la validación offline. El backend sí ofrece endpoints de registro, lotes y consulta de revocaciones; su existencia no significa que la app ya esté integrada con ellos.
+El backend expone la lista de eventos asignados al staff y sus puertas, excluyendo eventos finalizados. La app carga esa lista y registra el dispositivo para la puerta elegida. No hay una asignación staff-puerta en el modelo: un staff asignado a un evento puede iniciar un turno en cualquiera de sus puertas, y cada dispositivo registrado queda vinculado a una puerta específica. El backend rechaza con 403 los eventos no asignados, con 404 las puertas que no pertenecen al evento y con 409 los eventos finalizados. Al sincronizar, vuelve a comprobar la asignación, la puerta del dispositivo y que cada entrada pertenezca al evento. Las revocaciones requieren un evento asignado y se devuelven filtradas por ese evento. La app conserva revocaciones localmente y sincroniza escaneos pendientes asociados a dispositivos registrados cuando hay conexión. En modo offline solo puede aplicar la última lista de revocaciones sincronizada, por lo que cambios posteriores del servidor no se conocen hasta reconectar.
 
-El backend rechaza duplicados sincronizados mediante `ClientScanId` y serializa el procesamiento concurrente por entrada. El registro de dispositivo comprueba la asignación del staff al evento y que la puerta pertenezca a ese evento. Sin embargo, los lotes no vuelven a comprobar la asignación vigente ni que cada entrada corresponda al evento del dispositivo, y la consulta de revocaciones no está filtrada por las asignaciones del staff. La pantalla móvil de inicio de turno todavía presenta el evento y las puertas fijos del evento 6; no debe usarse como fuente de autorización. Completar estas validaciones y la sincronización móvil es requisito previo para tratar el flujo como un control de acceso de producción.
+Para probar el escaneo del evento 6 con las cuentas de la seed, inicia sesión como `staff6@ticketing.test` y como `asistente12@correo.test`. Staff 6 está asignado al evento 6; el asistente 12 tiene entradas pagadas para ese evento (por ejemplo, la entrada `#2864` en la seed). En el entorno local verificado, esa entrada sigue pagada y el endpoint de QR devuelve HTTP 200. Usa el QR vigente de la billetera para escanear. En cambio, una entrada transferida o en otro estado no activo no puede generar un bloque de QR: el backend responde HTTP 409 (`TicketNotActive`). La billetera debe mostrar que esa entrada ya no está activa, no presentarla como un QR válido.
 
 La clave privada no debe copiarse a móviles ni guardarse en Git. Para producción se recomienda custodiarla en un gestor de secretos o HSM/KMS, con rotación y respaldo controlados.
 
@@ -192,11 +192,13 @@ La billetera usa `FlatList` para el listado virtualizado de entradas, en lugar d
 
 La app usa `EXPO_PUBLIC_API_URL` como override opcional de la URL del backend, por ejemplo `http://192.168.1.20:5248/api`. Sin override, el emulador Android utiliza `http://10.0.2.2:5248/api`; un dispositivo físico obtiene el host de desarrollo de Expo y usa el puerto `5248`. El host debe poder alcanzar la computadora y el backend debe escuchar en todas las interfaces (`http://*:5248`). El puerto `8081` de Expo/Metro sirve el bundle de desarrollo, no es el puerto de la API.
 
-Si el teléfono o emulador conserva una base SQLite creada por una versión anterior, el scanner inspecciona `offline_scans` al iniciar y añade la columna `resultado` cuando no existe; las filas antiguas quedan con resultado predeterminado `ok`. La base conserva la detección local de duplicados entre reinicios de la app.
+Si el teléfono o emulador conserva una base SQLite creada por una versión anterior, el scanner migra `offline_scans` para incorporar el resultado, evento, puerta y dispositivo asociados al escaneo. Las filas antiguas reciben un resultado predeterminado, pero no tienen metadatos suficientes para enviarse con seguridad y quedan pendientes de revisión manual. La base conserva la detección local de duplicados y las revocaciones descargadas entre reinicios de la app.
 
-### Alcance actual del escáner staff
+### Alcance y límites del escáner staff
 
-La app verifica firmas Ed25519 y detecta duplicados en SQLite. La pantalla de inicio de turno todavía muestra el evento y las puertas fijos del evento 6, en lugar de cargar las asignaciones del usuario; no confíes en esa selección como una autorización. La app aún no registra el dispositivo con el backend, no sincroniza lecturas ni consulta revocaciones. Además, aunque el backend valida la asignación y pertenencia de la puerta durante el registro del dispositivo, el procesamiento de lotes no vuelve a validar la asignación actual ni que cada entrada pertenezca al evento, y las revocaciones se consultan globalmente. Considera este flujo incompleto para operación real hasta integrar el cliente y cerrar esas validaciones.
+La app solicita los eventos asignados a la identidad del staff, excluye los finalizados, permite elegir una puerta del evento y registra ese dispositivo antes de abrir la cámara. Cada escaneo válido se guarda en SQLite con el evento, puerta e identificador idempotente del cliente. Al recuperar conectividad, el dispositivo descarga las revocaciones de su evento y envía los lotes al backend; también se puede solicitar la sincronización manualmente. El backend vuelve a validar la asignación al procesar un lote, verifica la puerta registrada y comprueba que la entrada corresponda al evento del dispositivo. Un escaneo que intente reportar otro evento o puerta recibe un resultado de rechazo y no se registra como ingreso.
+
+La operación offline no puede conocer una revocación creada después de su última sincronización; la autorización offline debe entenderse con ese límite de frescura. Los escaneos heredados de versiones anteriores que no conservan evento y puerta quedan pendientes de revisión manual, porque el cliente no puede inferir con seguridad dónde ocurrieron. El backend devuelve 403 al staff no asignado, 404 para recursos de evento/puerta inexistentes o inconsistentes y 409 para eventos finalizados; no existe vínculo directo staff-puerta, solo asignación a evento y dispositivos vinculados a una puerta elegida dentro de ese evento.
 
 Para mantener una interfaz fluida:
 
@@ -213,9 +215,11 @@ Solo para la base de datos local sembrada. Las contraseñas del seed son conocid
 | Rol | Cuenta(s) de ejemplo | Contraseña |
 |---|---|---|
 | Administrador | `admin@ticketing.test` | `Admin2026!` |
-| Organizador | `org.istmo@ticketing.test`, `org.canal@ticketing.test`, `org.pacifico@ticketing.test` | `Organizador2026!` |
-| Staff | `staff1@ticketing.test` … `staff12@ticketing.test` | `Staff2026!` |
-| Asistente | `asistente1@correo.test`, `asistente2@correo.test` (hay 600 cuentas `asistenteN@correo.test`) | `Asistente2026!` |
+| Organizador | `org.istmo@ticketing.test` (también `org.canal@ticketing.test`, `org.pacifico@ticketing.test`) | `Organizador2026!` |
+| Staff | `staff1@ticketing.test` (también `staff2@ticketing.test` … `staff12@ticketing.test`) | `Staff2026!` |
+| Asistente | `asistente12@correo.test` (también `asistente1@correo.test`, `asistente2@correo.test`; hay 600 cuentas `asistenteN@correo.test`) | `Asistente2026!` |
+
+Para una prueba rápida del escáner de la seed, `asistente12@correo.test` tiene entradas pagadas del evento 6 y `staff6@ticketing.test` está asignado a ese evento. `staff1@ticketing.test` es otra cuenta de prueba de staff y está asignada a los eventos 1, 4 y 7; no uses esa cuenta para escanear una entrada del evento 6. `org.istmo@ticketing.test` sirve para probar el portal de organizador.
 
 ## Pruebas
 
@@ -259,7 +263,7 @@ HMAC requiere compartir el secreto de firma con cada dispositivo que verifica; u
 
 ### ¿Por qué usar una ventana rotativa y no TOTP?
 
-La app muestra tokens firmados por el backend con ventanas temporales de 30 segundos. El verificador no necesita un secreto simétrico compartido: valida la firma asimétrica y la ventana permitida. La tolerancia de reloj y la revocación se deben considerar aparte; actualmente, la app de staff no sincroniza revocaciones.
+La app muestra tokens firmados por el backend con ventanas temporales de 30 segundos. El verificador no necesita un secreto simétrico compartido: valida la firma asimétrica y la ventana permitida. La tolerancia de reloj y la frescura de las revocaciones se deben considerar aparte: durante una desconexión, el scanner solo conoce las revocaciones recibidas en su última sincronización.
 
 ### ¿Por qué crear una entrada nueva al transferir un ticket?
 
@@ -277,8 +281,6 @@ El escenario crea reservas temporales que ocupan capacidad hasta cancelarse o ex
 
 Estas capacidades no deben inferirse de la arquitectura descrita: no forman parte del alcance funcional actual o requieren integración adicional.
 
-- Sincronización móvil del escáner con `/api/scanner/batches`, registro de dispositivos desde la app y descarga/aplicación incremental de revocaciones.
-- Carga dinámica de eventos y puertas asignados al staff, más validación de asignación y pertenencia de cada entrada en todas las operaciones de escaneo.
 - Creación y persistencia de puertas y asignaciones de staff desde el flujo de creación de eventos del portal.
 - Sincronización en vivo del portal mediante WebSockets; los paneles cargan sus datos a través de consultas HTTP.
 - Integración con pasarelas de pago reales, notificaciones push, listas de espera, asientos numerados, Apple/Google Wallet y publicación móvil de producción.
@@ -290,5 +292,5 @@ Estas capacidades no deben inferirse de la arquitectura descrita: no forman part
 - Auth: `/api/auth/register`, `/login`, `/refresh`, `/logout`, `/me`.
 - Reservas/pagos: `/api/reservas`, `/api/reservas/{id}/pago`, `/api/reservas/{id}`.
 - Entradas: `/api/tickets/my`, `/api/tickets/{id}/rotating`, `/api/tickets/{id}/transfer`, `/api/tickets/{id}/refund`.
-- Escáner: `/api/scanner/devices`, `/api/scanner/batches`, `/api/scanner/revocations`, `/api/scanner/public-key`.
+- Escáner: `GET /api/scanner/events` (eventos asignados), `POST /api/scanner/devices`, `POST /api/scanner/batches`, `GET /api/scanner/revocations?eventId={id}&since={ts}`, `GET /api/scanner/public-key`.
 - Administración: rutas `/api/admin/events` y `/api/admin/tickets` indicadas en la sección del portal.

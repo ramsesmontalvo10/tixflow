@@ -17,6 +17,13 @@ public class ScannerController(
             ?? User.FindFirstValue("sub")
             ?? throw new UnauthorizedAccessException());
 
+    // GET /api/scanner/events
+    [HttpGet("events")]
+    public async Task<IActionResult> GetAssignedEvents()
+    {
+        return Ok(await scanner.GetAssignedEventsAsync(CurrentUserId));
+    }
+
     // POST /api/scanner/devices
     [HttpPost("devices")]
     public async Task<IActionResult> RegisterDevice([FromBody] RegisterDeviceRequest req)
@@ -26,9 +33,17 @@ public class ScannerController(
             var deviceId = await scanner.RegisterDeviceAsync(CurrentUserId, req);
             return Ok(new { deviceId });
         }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { code = "ScannerResourceNotFound", message = ex.Message });
+        }
         catch (InvalidOperationException ex)
         {
-            return BadRequest(new { code = "DeviceRegistrationFailed", message = ex.Message });
+            return Conflict(new { code = "EventUnavailable", message = ex.Message });
         }
     }
 
@@ -53,16 +68,27 @@ public class ScannerController(
         {
             return Forbid();
         }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { code = "ScannerResourceNotFound", message = ex.Message });
+        }
         catch (InvalidOperationException ex)
         {
-            return BadRequest(new { code = "BatchProcessingFailed", message = ex.Message });
+            return Conflict(new { code = "EventUnavailable", message = ex.Message });
         }
     }
 
-    // GET /api/scanner/revocations?since=<ts>
+    // GET /api/scanner/revocations?eventId=<id>&since=<ts>
     [HttpGet("revocations")]
-    public async Task<IActionResult> GetRevocations([FromQuery] string? since)
+    public async Task<IActionResult> GetRevocations(
+        [FromQuery] int eventId,
+        [FromQuery] string? since)
     {
+        if (eventId <= 0)
+        {
+            return BadRequest(new { code = "InvalidEventId" });
+        }
+
         DateTimeOffset sinceTs;
         if (string.IsNullOrWhiteSpace(since))
         {
@@ -73,13 +99,26 @@ public class ScannerController(
             return BadRequest(new { code = "InvalidSince", message = "since must be an ISO 8601 timestamp." });
         }
 
-        var revocations = await scanner.GetRevocationsSinceAsync(sinceTs);
-        return Ok(new
+        try
         {
-            since = sinceTs,
-            count = revocations.Count,
-            revocations
-        });
+            var (syncedAt, revocations) =
+                await scanner.GetRevocationsSinceAsync(CurrentUserId, eventId, sinceTs);
+            return Ok(new
+            {
+                since = sinceTs,
+                syncedAt,
+                count = revocations.Count,
+                revocations
+            });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(new { code = "ScannerResourceNotFound", message = ex.Message });
+        }
     }
 
     // GET /api/scanner/public-key

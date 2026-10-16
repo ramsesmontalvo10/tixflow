@@ -54,6 +54,13 @@ export interface SalesSummary {
   }[];
 }
 
+export interface AdminEvent {
+  id: number;
+  nombre: string;
+  fecha: string;
+  estado: string;
+}
+
 export interface AdminTicket {
   id: number;
   eventoId: number;
@@ -171,6 +178,13 @@ export async function createAdminEvent(request: CreateEventRequest, token: strin
     body: JSON.stringify(request),
   });
   return readJson<{ id: number; codigo: string; nombre: string }>(response);
+}
+
+export async function fetchAdminEvents(token: string) {
+  const response = await fetch(`${API_BASE_URL}/admin/events`, {
+    headers: { Authorization: ['Bearer', token].join(' ') },
+  });
+  return readJson<AdminEvent[]>(response);
 }
 
 export async function fetchSalesSummary(eventId: number, token: string) {

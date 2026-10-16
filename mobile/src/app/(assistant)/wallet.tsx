@@ -121,6 +121,16 @@ export default function WalletScreen() {
         `${API_URL}/tickets/${ticketId}/rotating?count=100`,
         { headers: { Authorization: `Bearer ${accessToken}` } },
       );
+      if (response.status === 409) {
+        setTokenBlock([]);
+        setDemoTokenMode(false);
+        setTickets((current) => current.filter((ticket) => ticket.id !== ticketId));
+        setSelectedTicket((current) => current?.id === ticketId ? null : current);
+        setError(
+          `La entrada #${ticketId} ya no está activa y no puede generar nuevos códigos QR.`,
+        );
+        return;
+      }
       if (!response.ok) {
         throw new Error(
           `No se pudo obtener el bloque firmado del ticket (HTTP ${response.status}).`,
@@ -163,9 +173,6 @@ export default function WalletScreen() {
         if (remaining === 1) {
           setSecondsLeft(0);
           setDemoWindow((window) => window + 1);
-          if (selectedTicket && !demoTokenMode) {
-            void loadTokenBlock(selectedTicket.id);
-          }
           return 0;
         }
 
@@ -194,12 +201,14 @@ export default function WalletScreen() {
   const qrValue = currentToken
     ? JSON.stringify({
         ticketId: currentToken.ticketId,
+        eventId: currentToken.eventId,
         window: currentToken.window,
         signatureBase64: currentToken.signatureBase64,
       })
     : demoTokenMode && selectedTicket
       ? JSON.stringify({
           ticketId: selectedTicket.id,
+          eventId: selectedTicket.eventoId,
           window: demoWindow,
           signatureBase64: `DEMO-NOT-A-SIGNATURE-${selectedTicket.id}-${demoWindow}`,
           demo: true,

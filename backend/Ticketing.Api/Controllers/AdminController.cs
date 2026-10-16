@@ -68,6 +68,29 @@ public sealed class AdminRefundRequest
 [Authorize(Roles = "organizador")]
 public class AdminController(TicketingDb db) : ControllerBase
 {
+    [HttpGet("events")]
+    public async Task<IActionResult> GetOrganizerEvents()
+    {
+        if (!TryGetOrganizerId(out var organizerId))
+        {
+            return Unauthorized();
+        }
+
+        var events = await db.Eventos.AsNoTracking()
+            .Where(evento => evento.OrganizadorId == organizerId)
+            .OrderByDescending(evento => evento.Fecha)
+            .Select(evento => new
+            {
+                evento.Id,
+                evento.Nombre,
+                evento.Fecha,
+                evento.Estado
+            })
+            .ToListAsync();
+
+        return Ok(events);
+    }
+
     [HttpPost("events")]
     public async Task<IActionResult> CreateEvent([FromBody] CreateAdminEventRequest request)
     {

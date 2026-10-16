@@ -97,7 +97,11 @@ if (app.Environment.IsDevelopment())
         IRotatingTokenService rotating,
         VerifyRotatingRequest req) =>
     {
-        var (ok, error) = await rotating.VerifyAsync(req.TicketId, req.Window, req.SignatureBase64);
+        var (ok, error) = await rotating.VerifyAsync(
+            req.TicketId,
+            req.EventId,
+            req.Window,
+            req.SignatureBase64);
         return Results.Ok(new { ok, error });
     });
 }
@@ -105,4 +109,4 @@ if (app.Environment.IsDevelopment())
 app.Run();
 
 // Tipos declarados después de los top-level statements
-public record VerifyRotatingRequest(int TicketId, long Window, string SignatureBase64);
+public record VerifyRotatingRequest(int TicketId, int EventId, long Window, string SignatureBase64);

@@ -13,7 +13,9 @@ import * as Crypto from 'expo-crypto';
 import { Buffer } from 'buffer';
 import nacl from 'tweetnacl';
 import { router } from 'expo-router';
+import * as SecureStore from 'expo-secure-store';
 import { API_URL } from '@/config/api';
+import { getAccessToken } from '@/lib/api';
 import {
   decodeRotatingToken,
   TOKEN_WINDOW_SECONDS,
@@ -25,21 +27,68 @@ const PUBLIC_KEY_OVERRIDE = process.env.EXPO_PUBLIC_ED25519_PUBLIC_KEY ?? '';
 
 type ScanStatus = 'ready' | 'granted' | 'duplicate' | 'invalid';
 
-function verifyBase64Token(data: string, publicKeyBase64: string): number | null {
+type StaffShift = {
+  eventId: number;
+  eventName: string;
+  doorId: number;
+  doorName: string;
+  deviceId: number;
+};
+
+type PendingScan = {
+  clientScanId: string;
+  entradaId: number;
+  eventoId: number;
+  puertaId: number;
+  escaneadoEn: string;
+  deviceId: number;
+};
+
+type ServerScanResult = {
+  clientScanId: string;
+  entradaId: number;
+  resultado: string;
+};
+
+async function responseError(response: Response) {
+  try {
+    const body: unknown = await response.json();
+    if (
+      typeof body === 'object' &&
+      body !== null &&
+      'message' in body &&
+      typeof body.message === 'string'
+    ) {
+      return `HTTP ${response.status}: ${body.message}`;
+    }
+  } catch {
+    return `La solicitud falló (HTTP ${response.status}).`;
+  }
+  return `La solicitud falló (HTTP ${response.status}).`;
+}
+
+function verifyBase64Token(
+  data: string,
+  publicKeyBase64: string,
+  expectedEventId: number,
+): number | null {
   try {
     const decoded = Buffer.from(data, 'base64');
     if (decoded.length === 0 || decoded.toString('base64').replace(/=+$/, '') !== data.replace(/=+$/, '')) {
       return null;
     }
 
-    const [entryIdText, timestampText, signatureBase64, ...extra] =
+    const [entryIdText, eventIdText, timestampText, signatureBase64, ...extra] =
       decoded.toString('utf8').split(':');
     const entryId = Number(entryIdText);
+    const eventId = Number(eventIdText);
     const timestamp = Number(timestampText);
     if (
       extra.length > 0 ||
       !Number.isSafeInteger(entryId) ||
       entryId <= 0 ||
+      !Number.isSafeInteger(eventId) ||
+      eventId !== expectedEventId ||
       !Number.isSafeInteger(timestamp) ||
       !signatureBase64
     ) {
@@ -55,7 +104,7 @@ function verifyBase64Token(data: string, publicKeyBase64: string): number | null
 
     const publicKey = Buffer.from(publicKeyBase64, 'base64');
     const signature = Buffer.from(signatureBase64, 'base64');
-    const payload = Buffer.from(`${entryId}:${timestamp}`, 'utf8');
+    const payload = Buffer.from(`${entryId}:${eventId}:${timestamp}`, 'utf8');
     if (
       publicKey.length !== nacl.sign.publicKeyLength ||
       signature.length !== nacl.sign.signatureLength
@@ -79,10 +128,14 @@ export default function ScannerScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [shift, setShift] = useState<StaffShift | null>(null);
   const [publicKey, setPublicKey] = useState('');
   const [keyMessage, setKeyMessage] = useState('Cargando clave pública…');
   const [scanStatus, setScanStatus] = useState<ScanStatus>('ready');
   const [resultMessage, setResultMessage] = useState('Apunta la cámara a un QR rotativo.');
+  const [syncMessage, setSyncMessage] = useState('Preparando sincronización…');
+  const [revocationsReady, setRevocationsReady] = useState(false);
+  const syncing = React.useRef(false);
 
   const updatePendingCount = useCallback(() => {
     const result = db.getFirstSync<{ count: number }>(
@@ -106,7 +159,17 @@ export default function ScannerScreen() {
         clientScanId TEXT NOT NULL UNIQUE,
         entradaId INTEGER NOT NULL,
         escaneadoEn TEXT NOT NULL,
-        resultado TEXT NOT NULL
+        resultado TEXT NOT NULL,
+        eventoId INTEGER,
+        puertaId INTEGER,
+        deviceId INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS revoked_entries (
+        eventId INTEGER NOT NULL,
+        entradaId INTEGER NOT NULL,
+        revokedAt TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        PRIMARY KEY (eventId, entradaId)
       );
     `);
 
@@ -117,6 +180,15 @@ export default function ScannerScreen() {
       db.execSync(
         "ALTER TABLE offline_scans ADD COLUMN resultado TEXT NOT NULL DEFAULT 'ok';",
       );
+    }
+    if (!offlineScanColumns.some((column) => column.name === 'eventoId')) {
+      db.execSync('ALTER TABLE offline_scans ADD COLUMN eventoId INTEGER;');
+    }
+    if (!offlineScanColumns.some((column) => column.name === 'puertaId')) {
+      db.execSync('ALTER TABLE offline_scans ADD COLUMN puertaId INTEGER;');
+    }
+    if (!offlineScanColumns.some((column) => column.name === 'deviceId')) {
+      db.execSync('ALTER TABLE offline_scans ADD COLUMN deviceId INTEGER;');
     }
 
     const cachedKey = db.getFirstSync<{ value: string }>(
@@ -131,6 +203,36 @@ export default function ScannerScreen() {
     updatePendingCount();
 
     let cancelled = false;
+    void SecureStore.getItemAsync('ticketing.staffGate').then((serializedShift) => {
+      if (!serializedShift) {
+        router.replace('/(staff)');
+        return;
+      }
+      try {
+        const parsed: unknown = JSON.parse(serializedShift);
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          'eventId' in parsed &&
+          typeof parsed.eventId === 'number' &&
+          'eventName' in parsed &&
+          typeof parsed.eventName === 'string' &&
+          'doorId' in parsed &&
+          typeof parsed.doorId === 'number' &&
+          'doorName' in parsed &&
+          typeof parsed.doorName === 'string' &&
+          'deviceId' in parsed &&
+          typeof parsed.deviceId === 'number'
+        ) {
+          setShift(parsed as StaffShift);
+        } else {
+          router.replace('/(staff)');
+        }
+      } catch {
+        router.replace('/(staff)');
+      }
+    });
+
     const refreshPublicKey = async () => {
       if (PUBLIC_KEY_OVERRIDE) return;
       try {
@@ -174,8 +276,223 @@ export default function ScannerScreen() {
     };
   }, [updatePendingCount]);
 
+  const syncPendingScans = useCallback(async () => {
+    if (!shift || syncing.current) return;
+    syncing.current = true;
+    setSyncMessage('Actualizando revocaciones y escaneos…');
+
+    try {
+      const accessToken = await getAccessToken();
+      if (!accessToken) {
+        router.replace('/(auth)/login');
+        return;
+      }
+      const headers = { Authorization: `Bearer ${accessToken}` };
+      const pendingScans = db.getAllSync<PendingScan>(
+        `SELECT clientScanId, entradaId, eventoId, puertaId, escaneadoEn, deviceId
+         FROM offline_scans
+         WHERE eventoId IS NOT NULL AND puertaId IS NOT NULL AND deviceId IS NOT NULL
+         ORDER BY id
+         LIMIT 300;`,
+      );
+      const eventIds = [...new Set([
+        shift.eventId,
+        ...pendingScans.map((scan) => scan.eventoId),
+      ])];
+      const blockedEventIds = new Set<number>();
+
+      for (const eventId of eventIds) {
+        const cursorKey = `scanner.revocations.${eventId}`;
+        const cursor = db.getFirstSync<{ value: string }>(
+          'SELECT value FROM scanner_config WHERE key = ?;',
+          [cursorKey],
+        )?.value ?? new Date(0).toISOString();
+        const revocationsResponse = await fetch(
+          `${API_URL}/scanner/revocations?eventId=${eventId}&since=${encodeURIComponent(cursor)}`,
+          { headers },
+        );
+        if (!revocationsResponse.ok) {
+          const message = await responseError(revocationsResponse);
+          if (
+            eventId !== shift.eventId &&
+            (message.includes('HTTP 403') ||
+              message.includes('HTTP 404') ||
+              message.includes('HTTP 409'))
+          ) {
+            blockedEventIds.add(eventId);
+            continue;
+          }
+          throw new Error(message);
+        }
+
+        const revocationPayload: unknown = await revocationsResponse.json();
+        if (
+          typeof revocationPayload !== 'object' ||
+          revocationPayload === null ||
+          !('syncedAt' in revocationPayload) ||
+          !('revocations' in revocationPayload) ||
+          !Array.isArray(revocationPayload.revocations)
+        ) {
+          throw new Error('El backend devolvió una lista de revocaciones inválida.');
+        }
+        const syncedAt = revocationPayload.syncedAt;
+        const revocations = revocationPayload.revocations;
+        if (typeof syncedAt !== 'string') {
+          throw new Error('El backend devolvió un cursor de revocaciones inválido.');
+        }
+        db.withTransactionSync(() => {
+          for (const revocation of revocations) {
+            if (
+              typeof revocation !== 'object' ||
+              revocation === null ||
+              !('entradaId' in revocation) ||
+              typeof revocation.entradaId !== 'number' ||
+              !('revocadaEn' in revocation) ||
+              typeof revocation.revocadaEn !== 'string' ||
+              !('motivo' in revocation) ||
+              typeof revocation.motivo !== 'string'
+            ) {
+              throw new Error('El backend devolvió un elemento de revocación inválido.');
+            }
+            db.runSync(
+              `INSERT INTO revoked_entries (eventId, entradaId, revokedAt, reason)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(eventId, entradaId)
+               DO UPDATE SET revokedAt = excluded.revokedAt, reason = excluded.reason;`,
+              [eventId, revocation.entradaId, revocation.revocadaEn, revocation.motivo],
+            );
+          }
+          db.runSync(
+            `INSERT INTO scanner_config (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+            [cursorKey, new Date(Date.parse(syncedAt) - 60_000).toISOString()],
+          );
+        });
+        if (eventId === shift.eventId) setRevocationsReady(true);
+      }
+
+      let syncedCount = 0;
+      let rejectedCount = 0;
+      let inaccessibleCount = 0;
+      const batchesByDevice = new Map<number, PendingScan[]>();
+      for (const scan of pendingScans) {
+        if (blockedEventIds.has(scan.eventoId)) {
+          inaccessibleCount++;
+          continue;
+        }
+        const batch = batchesByDevice.get(scan.deviceId) ?? [];
+        batch.push(scan);
+        batchesByDevice.set(scan.deviceId, batch);
+      }
+
+      for (const [deviceId, scans] of batchesByDevice) {
+        const batchResponse = await fetch(`${API_URL}/scanner/batches`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, scans }),
+        });
+        if (!batchResponse.ok) {
+          const message = await responseError(batchResponse);
+          if (
+            scans.some((scan) => scan.eventoId !== shift.eventId) &&
+            (message.includes('HTTP 403') ||
+              message.includes('HTTP 404') ||
+              message.includes('HTTP 409'))
+          ) {
+            inaccessibleCount += scans.length;
+            continue;
+          }
+          throw new Error(message);
+        }
+
+        const batchPayload: unknown = await batchResponse.json();
+        if (
+          typeof batchPayload !== 'object' ||
+          batchPayload === null ||
+          !('results' in batchPayload) ||
+          !Array.isArray(batchPayload.results)
+        ) {
+          throw new Error('El backend devolvió una respuesta de sincronización inválida.');
+        }
+
+        const resultById = new Map<string, string>();
+        for (const result of batchPayload.results as ServerScanResult[]) {
+          if (
+            typeof result.clientScanId !== 'string' ||
+            typeof result.resultado !== 'string'
+          ) {
+            throw new Error('El backend devolvió un resultado de escaneo inválido.');
+          }
+          resultById.set(result.clientScanId, result.resultado);
+        }
+        if (scans.some((scan) => !resultById.has(scan.clientScanId))) {
+          throw new Error('El backend no confirmó todos los escaneos enviados.');
+        }
+
+        db.withTransactionSync(() => {
+          for (const scan of scans) {
+            const result = resultById.get(scan.clientScanId);
+            if (result !== 'ok' && result !== 'duplicate') rejectedCount++;
+            db.runSync('DELETE FROM offline_scans WHERE clientScanId = ?;', [scan.clientScanId]);
+            syncedCount++;
+          }
+        });
+      }
+
+      updatePendingCount();
+      const legacyCount = db.getFirstSync<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM offline_scans
+         WHERE eventoId IS NULL OR puertaId IS NULL OR deviceId IS NULL;`,
+      )?.count ?? 0;
+      const warnings = [];
+      if (inaccessibleCount > 0) warnings.push(`${inaccessibleCount} de otro turno sin autorización vigente`);
+      if (legacyCount > 0) warnings.push(`${legacyCount} escaneos antiguos requieren revisión manual`);
+      if (rejectedCount > 0) warnings.push(`${rejectedCount} escaneos rechazados por el servidor`);
+      setSyncMessage(
+        warnings.length > 0
+          ? `Sincronizados ${syncedCount}. Avisos: ${warnings.join('; ')}.`
+          : syncedCount > 0
+            ? `Sincronizados ${syncedCount} escaneos.`
+            : 'Sincronizado. No hay escaneos pendientes.',
+      );
+    } catch (syncError) {
+      const message = syncError instanceof Error ? syncError.message : 'Error desconocido.';
+      console.warn('Scanner synchronization failed:', syncError);
+      const isNetworkError =
+        syncError instanceof TypeError ||
+        /fetch failed|network request failed|internet connection appears to be offline|network error/i.test(message);
+      setSyncMessage(
+        isNetworkError
+          ? 'Sin conexión. Tus escaneos permanecen guardados y se sincronizarán cuando vuelva internet.'
+          : 'No pudimos sincronizar en este momento. Tus escaneos siguen guardados; inténtalo de nuevo.',
+      );
+      if (message.includes('HTTP 401')) {
+        router.replace('/(auth)/login');
+        return;
+      }
+      if (message.includes('HTTP 403') || message.includes('HTTP 404') || message.includes('HTTP 409')) {
+        await SecureStore.deleteItemAsync('ticketing.staffGate');
+        setShift(null);
+        router.replace('/(staff)');
+      }
+      setRevocationsReady(true);
+    } finally {
+      syncing.current = false;
+      updatePendingCount();
+    }
+  }, [shift, updatePendingCount]);
+
+  useEffect(() => {
+    if (!shift) return;
+    setRevocationsReady(false);
+    void syncPendingScans();
+    const interval = setInterval(() => void syncPendingScans(), 20_000);
+    return () => clearInterval(interval);
+  }, [shift, syncPendingScans]);
+
   const handleBarcodeScanned = useCallback(({ data }: { data: string }) => {
     if (scanned) return;
+    if (!shift || !revocationsReady) return;
     setScanned(true);
 
     if (!publicKey) {
@@ -186,13 +503,23 @@ export default function ScannerScreen() {
 
     const token = decodeRotatingToken(data);
     const entryId = token
-      ? verifyRotatingToken(token, publicKey)
+      ? verifyRotatingToken(token, publicKey, shift.eventId)
         ? token.ticketId
         : null
-      : verifyBase64Token(data, publicKey);
+      : verifyBase64Token(data, publicKey, shift.eventId);
     if (entryId === null) {
       setScanStatus('invalid');
       setResultMessage('Firma inválida o código fuera de su ventana de tiempo.');
+      return;
+    }
+
+    const revoked = db.getFirstSync<{ reason: string }>(
+      'SELECT reason FROM revoked_entries WHERE eventId = ? AND entradaId = ?;',
+      [shift.eventId, entryId],
+    );
+    if (revoked) {
+      setScanStatus('invalid');
+      setResultMessage(`ENTRADA REVOCADA\n${revoked.reason}`);
       return;
     }
 
@@ -204,8 +531,8 @@ export default function ScannerScreen() {
 
     if (existing) {
       db.runSync(
-        'INSERT INTO offline_scans (clientScanId, entradaId, escaneadoEn, resultado) VALUES (?, ?, ?, ?);',
-        [Crypto.randomUUID(), entryId, scannedAt, 'duplicate'],
+        'INSERT INTO offline_scans (clientScanId, entradaId, escaneadoEn, resultado, eventoId, puertaId, deviceId) VALUES (?, ?, ?, ?, ?, ?, ?);',
+        [Crypto.randomUUID(), entryId, scannedAt, 'duplicate', shift.eventId, shift.doorId, shift.deviceId],
       );
       setScanStatus('duplicate');
       setResultMessage(`DUPLICADO / ACCESO DENEGADO\nEntrada #${entryId} ya registrada en esta puerta.`);
@@ -216,15 +543,16 @@ export default function ScannerScreen() {
           [entryId, scannedAt],
         );
         db.runSync(
-          'INSERT INTO offline_scans (clientScanId, entradaId, escaneadoEn, resultado) VALUES (?, ?, ?, ?);',
-          [Crypto.randomUUID(), entryId, scannedAt, 'ok'],
+          'INSERT INTO offline_scans (clientScanId, entradaId, escaneadoEn, resultado, eventoId, puertaId, deviceId) VALUES (?, ?, ?, ?, ?, ?, ?);',
+          [Crypto.randomUUID(), entryId, scannedAt, 'ok', shift.eventId, shift.doorId, shift.deviceId],
         );
       });
       setScanStatus('granted');
       setResultMessage(`ACCESO CONCEDIDO\nEntrada #${entryId}`);
     }
     updatePendingCount();
-  }, [publicKey, scanned, updatePendingCount]);
+    void syncPendingScans();
+  }, [publicKey, revocationsReady, scanned, shift, syncPendingScans, updatePendingCount]);
 
   if (!permission) {
     return (
@@ -252,7 +580,11 @@ export default function ScannerScreen() {
         style={StyleSheet.absoluteFill}
         facing="back"
         barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-        onBarcodeScanned={scanned ? undefined : handleBarcodeScanned}
+        onBarcodeScanned={
+          scanned || !shift || !publicKey || !revocationsReady
+            ? undefined
+            : handleBarcodeScanned
+        }
       />
       <SafeAreaView style={styles.overlay}>
         <View style={styles.headerRow}>
@@ -264,10 +596,29 @@ export default function ScannerScreen() {
           </TouchableOpacity>
         </View>
 
+        <View style={styles.shiftBadge}>
+          <Text style={styles.shiftText}>
+            {shift ? `${shift.eventName} · ${shift.doorName}` : 'Cargando turno autorizado…'}
+          </Text>
+        </View>
+
         <View style={styles.keyBadge}>
           <View style={[styles.keyDot, publicKey ? styles.keyReady : styles.keyMissing]} />
           <Text style={styles.keyText}>{keyMessage}</Text>
         </View>
+
+        <TouchableOpacity
+          accessibilityRole="button"
+          style={styles.syncButton}
+          disabled={!shift || syncing.current}
+          onPress={() => void syncPendingScans()}>
+          <Text style={styles.syncButtonText}>
+            {syncing.current ? 'Sincronizando…' : 'Sincronizar ahora'}
+          </Text>
+        </TouchableOpacity>
+        <Text accessibilityLiveRegion="polite" style={styles.syncMessage}>
+          {syncMessage}
+        </Text>
 
         <View
           accessibilityLiveRegion="assertive"
@@ -311,6 +662,11 @@ const styles = StyleSheet.create({
   headerRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   syncBadge: { backgroundColor: 'rgba(9,35,51,0.92)', borderRadius: 9, padding: 10 },
   syncText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  shiftBadge: { alignSelf: 'center', backgroundColor: 'rgba(9,35,51,0.92)', borderRadius: 9, marginTop: 12, padding: 10 },
+  shiftText: { color: '#fff', fontSize: 13, fontWeight: '700', textAlign: 'center' },
+  syncButton: { alignSelf: 'center', backgroundColor: '#12c4b2', borderRadius: 9, marginTop: 10, paddingHorizontal: 16, paddingVertical: 10 },
+  syncButtonText: { color: '#092333', fontSize: 13, fontWeight: '800' },
+  syncMessage: { alignSelf: 'center', backgroundColor: 'rgba(9,35,51,0.82)', borderRadius: 8, color: '#fff', fontSize: 11, marginTop: 6, padding: 8, textAlign: 'center' },
   logoutText: {
     backgroundColor: 'rgba(9,35,51,0.92)',
     borderRadius: 9,

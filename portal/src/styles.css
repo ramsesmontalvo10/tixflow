@@ -88,6 +88,8 @@ button:disabled { cursor: not-allowed; opacity: .62; }
 h1, h2, h3, p { margin-top: 0; }
 h1, h2, h3 { font-family: Manrope, sans-serif; }
 .page-title-row h1 { margin: 0; color: #1c293d; font-size: 26px; font-weight: 800; letter-spacing: -.7px; }
+.organizer-event-ids { margin: -14px 0 20px; color: #7e899a; font-size: 10px; }
+.organizer-event-ids strong { color: #16866d; font-weight: 700; }
 .date-label { display: flex; align-items: center; gap: 7px; padding-bottom: 3px; color: #7e899a; font-size: 10px; }
 .date-label span { color: #32a98c; font-size: 15px; }
 .page-stack { display: grid; gap: 16px; }

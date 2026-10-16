@@ -16,6 +16,7 @@ Inicia sesión con una cuenta de organizador. El JWT se guarda en el almacenamie
 ## Integración verificada con el backend
 
 - Inicio de sesión: `POST /api/auth/login`, definido en `AuthController`.
+- Eventos del organizador autenticado: `GET /api/admin/events`; la respuesta incluye solo los eventos que pertenecen a la cuenta de la sesión.
 - Creación de eventos con sus zonas y fases de precio: `POST /api/admin/events`, definido en `AdminController`.
 - Métricas de ventas: `GET /api/admin/events/{eventId}/sales-summary`.
 - Búsqueda de entradas: `GET /api/admin/events/{eventId}/tickets/search`. El parámetro opcional `query` busca coincidencias parciales, sin distinguir mayúsculas, en el correo del comprador.
@@ -26,6 +27,6 @@ Inicia sesión con una cuenta de organizador. El JWT se guarda en el almacenamie
 
 Estas rutas están declaradas en `backend/Ticketing.Api/Controllers/AdminController.cs` y protegidas para el rol `organizador`. Las operaciones sobre un evento validan que pertenezca al organizador autenticado; el backend responde `403 Forbidden` si el recurso es de otro organizador.
 
-El backend no ofrece una ruta para listar los eventos del organizador. Por eso el portal solicita el ID del evento para cargar ventas, entradas, accesos, incidentes o auditoría.
+El portal carga los eventos del organizador autenticado y permite seleccionar uno desde el selector compartido del panel. Ventas, entradas, accesos, incidentes y auditoría usan el evento seleccionado; el backend vuelve a validar la propiedad del evento en cada operación.
 
 La creación de puertas y la asignación de personal no forman parte de `POST /api/admin/events`. Los campos relacionados que aparecen en el formulario son solo referencias visuales: no se envían ni se guardan.

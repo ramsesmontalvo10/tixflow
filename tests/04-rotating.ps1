@@ -101,19 +101,32 @@ Check "currentWindow > 0" ($block.currentWindow -gt 0)
 
 $currentToken = $block.tokens[0]
 Check "Token tiene ticketId correcto" ($currentToken.ticketId -eq $anaTicket.id)
+Check "Token queda vinculado al evento de la entrada" ($currentToken.eventId -eq $anaTicket.eventoId)
 Check "Token tiene firma en base64" ($currentToken.signatureBase64.Length -gt 40)
 
 # 2) El token de la ventana actual verifica OK
 $verifyCurrent = Invoke-RestMethod "$base/api/_debug/verify-rotating" -Method Post -ContentType $j -Body (@{
     ticketId = $currentToken.ticketId
+    eventId = $currentToken.eventId
     window = $currentToken.window
     signatureBase64 = $currentToken.signatureBase64
 } | ConvertTo-Json)
 Check "Token actual verifica OK" ($verifyCurrent.ok -eq $true)
 
+$verifyWrongEvent = Invoke-RestMethod "$base/api/_debug/verify-rotating" -Method Post -ContentType $j -Body (@{
+    ticketId = $currentToken.ticketId
+    eventId = $currentToken.eventId + 1
+    window = $currentToken.window
+    signatureBase64 = $currentToken.signatureBase64
+} | ConvertTo-Json)
+Check "Token no se puede usar en otro evento -> WrongEvent" (
+    $verifyWrongEvent.ok -eq $false -and $verifyWrongEvent.error -eq "WrongEvent"
+)
+
 # 3) Un token con ventana vieja (hace 100 ventanas = 50 min) falla por ventana
 $verifyOld = Invoke-RestMethod "$base/api/_debug/verify-rotating" -Method Post -ContentType $j -Body (@{
     ticketId = $currentToken.ticketId
+    eventId = $currentToken.eventId
     window = $currentToken.window - 100
     signatureBase64 = $currentToken.signatureBase64
 } | ConvertTo-Json)
@@ -125,6 +138,7 @@ $badSigBytes[0] = $badSigBytes[0] -bxor 0xFF
 $badSig = [Convert]::ToBase64String($badSigBytes)
 $verifyBad = Invoke-RestMethod "$base/api/_debug/verify-rotating" -Method Post -ContentType $j -Body (@{
     ticketId = $currentToken.ticketId
+    eventId = $currentToken.eventId
     window = $currentToken.window
     signatureBase64 = $badSig
 } | ConvertTo-Json)
@@ -133,6 +147,7 @@ Check "Firma manipulada -> InvalidSignature" ($verifyBad.ok -eq $false -and $ver
 # 5) Firma malformada -> MalformedSignature
 $verifyMalformed = Invoke-RestMethod "$base/api/_debug/verify-rotating" -Method Post -ContentType $j -Body (@{
     ticketId = $currentToken.ticketId
+    eventId = $currentToken.eventId
     window = $currentToken.window
     signatureBase64 = "not-base64-!!!"
 } | ConvertTo-Json)
@@ -174,6 +189,7 @@ Check "Beto ve la entrada nueva" ($null -ne $betoHasNew)
 #    sigue siendo criptográficamente válido, PERO la entrada está revocada.
 $verifyRevoked = Invoke-RestMethod "$base/api/_debug/verify-rotating" -Method Post -ContentType $j -Body (@{
     ticketId = $currentToken.ticketId
+    eventId = $currentToken.eventId
     window = $currentToken.window
     signatureBase64 = $currentToken.signatureBase64
 } | ConvertTo-Json)
