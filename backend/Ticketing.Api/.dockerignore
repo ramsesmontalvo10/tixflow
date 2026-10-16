@@ -1,0 +1,4 @@
+bin/
+obj/
+.git/
+Data/ed25519.key

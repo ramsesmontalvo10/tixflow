@@ -1,282 +1,294 @@
-# Ticketing – Plataforma de venta y control de acceso
+# TixFlow — Plataforma de venta y control de acceso
 
-Prueba técnica para Hypernova Labs. Plataforma de venta de entradas con control de acceso en puerta, control offline y prevención de fraude.
+Monorepo para venta de entradas, emisión de códigos QR rotativos y administración de eventos. Incluye una app móvil Expo, un portal web React, una API ASP.NET Core y pruebas de reglas de negocio y concurrencia. El escáner móvil valida firmas y conserva lecturas localmente; la sincronización móvil de lotes todavía no está integrada.
 
-> Estado: en desarrollo. Los 4 invariantes del enunciado están implementados y verificados a nivel de backend. App móvil, portal, k6 y despliegue en Docker están en progreso.
+## Arquitectura del monorepo
 
-## Stack
+| Componente | Tecnología | Responsabilidad |
+|---|---|---|
+| `backend/Ticketing.Api` | ASP.NET Core Web API, .NET 10, EF Core, Npgsql | Autenticación, reservas, pagos simulados, entradas, escaneo, administración y auditoría |
+| PostgreSQL | PostgreSQL 16 | Fuente autoritativa para aforos, reservas, compras, entradas, revocaciones y auditoría |
+| `mobile` | React Native, Expo, TypeScript | Cartelera y billetera del asistente; QR rotativo; escáner staff con validación offline |
+| `portal` | React, TypeScript, Vite | Administración de eventos, ventas, entradas, accesos, incidentes y auditoría |
+| `tests` | PowerShell y k6 | Pruebas de reglas del negocio y escenario de concurrencia |
+| `docker-compose.yml` | Docker Compose | Orquestación de PostgreSQL, API y portal |
 
-- Backend: ASP.NET Core Web API (.NET 10), Entity Framework Core, Npgsql
-- Base de datos: PostgreSQL 16
-- Criptografía: Ed25519 (BouncyCastle.Cryptography)
-- Portal web: React + Vite (pendiente)
-- App móvil: React Native + Expo, TypeScript (pendiente)
-- Contenedores: Docker Compose
-- Pruebas de carga: k6 (pendiente)
+La semilla se encuentra en `backend/Ticketing.Api/Data/seed.json`. Al iniciar la API se aplican las migraciones pendientes y, si la base no tiene usuarios, se cargan los datos de prueba. Los identificadores de administración, organizadores y staff se desplazan al sembrar para evitar colisiones con los asistentes.
 
-## Estructura del repositorio
-ticketing/
-├── backend/Ticketing.Api/
-│ ├── Controllers/ Auth, Reservations, Tickets, Scanner
-│ ├── Data/ seed.json, Seeder, TicketingDb, Migrations
-│ ├── Models/ Entities.cs
-│ ├── Services/ Idempotency, Payment, Reservation,
-│ │ ReservationExpiry, Token, Ed25519Signer,
-│ │ RotatingToken, Scanner
-│ ├── data/ ed25519.key (fuera de git)
-│ ├── Program.cs
-│ └── Properties/ launchSettings.json
-├── portal/ Portal de administración (pendiente)
-├── mobile/ App móvil asistente + escáner (pendiente)
-├── tests/ Scripts PowerShell de verificación
-├── docker-compose.yml
-├── .env.example
-└── README.md
+## Inicio con Docker
 
-## Cómo ejecutar
+Requisitos: Docker Desktop con Docker Compose. En PowerShell, desde la raíz del repositorio:
 
-Requisitos: Docker Desktop, SDK de .NET 10, Git.
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+docker compose up --build -d
+docker compose ps
+```
 
-1. Copia `.env.example` a `.env` y ajusta los valores.
-2. Levanta la base de datos:
+`.env.example` contiene valores solo para desarrollo local, incluyendo las credenciales de PostgreSQL y una clave JWT de prueba. Si `.env` ya existe, el comando no lo sobrescribe. Sustituye la clave de ejemplo antes de desplegar fuera de un entorno local. Docker usa `Production` por defecto; el helper de pruebas cambia el backend a `Development` para habilitar el endpoint de diagnóstico que usa `04-rotating.ps1`.
+
+URLs por defecto:
+
+- Portal: `http://localhost`
+- API: `http://localhost:5248`
+- PostgreSQL: `localhost:5432`
+
+La imagen del portal configura Nginx para servir la SPA y reenviar `/api` al servicio `backend` de Compose. La API espera a que PostgreSQL pase el healthcheck, ejecuta `Database.MigrateAsync()` y llama al seeder durante su arranque. La clave privada Ed25519 se crea dentro del contenedor si no existe y persiste en el volumen `signingkey`; no se incluye la clave local del repositorio en la imagen.
+
+Para ver los logs:
+
+```powershell
+docker compose logs -f backend
+docker compose logs -f db
+```
+
+Para detener los contenedores sin borrar los datos persistidos:
+
+```powershell
+docker compose down
+```
+
+Se pueden personalizar `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_PORT`, `API_PORT` y `PORTAL_PORT` mediante variables de entorno. Compose requiere `JWT_KEY`; no se debe guardar una clave de producción en el repositorio. Los valores por defecto de PostgreSQL son únicamente para desarrollo local: cámbialos y protege los puertos antes de desplegar en un entorno compartido.
+
+### Ejecución local del backend
+
+Requisitos: SDK .NET 10 y PostgreSQL 16. Configura `ConnectionStrings:Default` (o `ConnectionStrings__Default`) y un `Jwt:Key` de al menos 32 caracteres. La configuración de desarrollo del proyecto ya define el perfil HTTP en el puerto `5248`.
+
+```powershell
 docker compose up -d db
-
-
-3. Ejecuta el backend desde `backend/Ticketing.Api`:
+Set-Location .\backend\Ticketing.Api
 dotnet run --launch-profile http
+```
 
+## Reglas de aforo y concurrencia
 
-Al arrancar aplica las migraciones y carga los datos de prueba (solo si la base está vacía).
+El aforo no depende de un contador actualizado en memoria. La disponibilidad efectiva se deriva de:
 
-> Aviso: `dotnet bin\Debug\net10.0\Ticketing.Api.dll` falla con `Jwt:Key` vacío porque no carga `appsettings.Development.json`. Usar `dotnet run --launch-profile http`.
+```text
+aforo de la zona
+- entradas que no estén reembolsadas ni anuladas
+- cantidades de reservas activas cuya expiración sea posterior a la hora actual
+```
 
-La cadena de conexión se toma de `ConnectionStrings:Default` (en Docker, de la variable de entorno `ConnectionStrings__Default`).
+La reserva ejecuta estas operaciones dentro de una transacción PostgreSQL:
 
-Backend en `http://localhost:5248`.
+1. Obtiene un advisory transaction lock para `(eventoId, asistenteId)`, que serializa el control del límite por cuenta en el evento.
+2. Lee la zona con `SELECT ... FOR UPDATE`. Este bloqueo exclusivo de fila serializa a los compradores que compiten por esa zona.
+3. Mientras conserva el lock, vuelve a calcular entradas vigentes y reservas activas, valida la capacidad y el límite por cuenta y crea la reserva.
+4. El lock se libera al confirmar o revertir la transacción.
 
-## Datos de prueba y credenciales
+Por ello, incluso cuando muchos compradores leen una disponibilidad similar al mismo tiempo, cada reserva que modifica el aforo vuelve a validar el total bajo el bloqueo de la zona. La consulta de disponibilidad no es una autorización para vender: la decisión definitiva se toma dentro de la transacción.
 
-La semilla carga el archivo `Data/seed.json` (administración, organizadores, staff, asistentes, eventos, zonas, fases de precio, compras, entradas, transferencias, ingresos y reservas).
+Las reservas activas tienen una duración configurable (10 minutos por defecto). Se liberan al expirar o cancelar. Al pagar, las entradas se crean y la reserva pasa a consumida en una misma transacción; la cantidad total ocupada no cambia en la conversión.
 
-| Rol | Email | Contraseña |
+### Lecturas, caché y alta disponibilidad
+
+La instalación actual consulta PostgreSQL primario; **no configura réplicas de lectura, una caché distribuida ni una arquitectura de alta disponibilidad para consultas**. Las métricas del portal son agregadas desde el backend y no se sirven desde una caché dinámica de dos segundos. Por tanto, no se debe asumir que esas capacidades están desplegadas.
+
+Una caché de dos segundos podría utilizarse en el futuro para paneles de solo lectura, pero no para aceptar reservas ni calcular el aforo autoritativo. Si se implementa, debe invalidarse al confirmar una reserva, pago, cancelación, reembolso o expiración; además, cualquier dato almacenado en caché sería indicativo. La creación de reservas debe seguir usando transacción, lock de zona y lectura actual de PostgreSQL. De este modo una cifra de dashboard temporalmente antigua no permitiría sobreventa.
+
+Para alta disponibilidad real se requeriría, además, PostgreSQL redundante con failover, réplicas para lecturas no críticas, observabilidad y pruebas de consistencia/recuperación. Nada de eso lo proporciona por sí solo el Compose local incluido en este repositorio.
+
+## Pagos, dinero e idempotencia
+
+El flujo de pago de esta versión es **simulado**: no integra un proveedor ni procesa cargos bancarios reales.
+
+- Todos los montos se expresan en centésimos enteros (USD en el seed); no se emplean números de punto flotante.
+- El precio autoritativo se fija en la reserva a partir de la fase vigente del servidor. El cliente no envía el monto del pago.
+- `POST /api/reservas` y `POST /api/reservas/{id}/pago` exigen `Idempotency-Key`.
+- La respuesta y el hash semántico de la petición quedan vinculados a `(UsuarioId, Endpoint, Clave)`. Repetir la misma clave y petición devuelve la respuesta almacenada; reutilizarla con otro contenido produce `422 IdempotencyKeyReused`.
+- La clave primaria compuesta y el índice único de `(AsistenteId, IdempotencyKey)` en `Compras` añaden una defensa a nivel de base de datos.
+- Una reserva expirada no emite entradas. El flujo registra el resultado como reembolsado según la política de pago tardío del backend.
+
+## Firma de entradas y alcance offline
+
+El backend firma tokens con Ed25519 y conserva la clave privada en `data/ed25519.key` (en Docker, dentro del volumen persistente `/app/data`). La clave pública se distribuye al escáner mediante `GET /api/scanner/public-key`; el dispositivo verifica firmas, no puede emitirlas.
+
+El payload firmado es `entradaId:ventana`, con una ventana de 30 segundos. La billetera obtiene del backend un bloque de tokens firmados para mostrar los códigos rotativos. En el escáner, la clave pública se descarga y se conserva localmente; la app valida la firma y su ventana temporal y guarda los escaneos y la detección de duplicados en SQLite.
+
+**Límite actual importante:** el flujo móvil de staff no registra dispositivos, no sincroniza las filas de `offline_scans` con `/api/scanner/batches` ni descarga revocaciones para aplicarlas al escaneo. Por lo tanto, un escaneo guardado localmente no se refleja en el backend, y las revocaciones recientes no se garantizan durante la validación offline. El backend sí ofrece endpoints de registro, lotes y consulta de revocaciones; su existencia no significa que la app ya esté integrada con ellos.
+
+El backend rechaza duplicados sincronizados mediante `ClientScanId` y serializa el procesamiento concurrente por entrada. El registro de dispositivo comprueba la asignación del staff al evento y que la puerta pertenezca a ese evento. Sin embargo, los lotes no vuelven a comprobar la asignación vigente ni que cada entrada corresponda al evento del dispositivo, y la consulta de revocaciones no está filtrada por las asignaciones del staff. La pantalla móvil de inicio de turno todavía presenta el evento y las puertas fijos del evento 6; no debe usarse como fuente de autorización. Completar estas validaciones y la sincronización móvil es requisito previo para tratar el flujo como un control de acceso de producción.
+
+La clave privada no debe copiarse a móviles ni guardarse en Git. Para producción se recomienda custodiarla en un gestor de secretos o HSM/KMS, con rotación y respaldo controlados.
+
+## Índices y diagnóstico con `EXPLAIN ANALYZE`
+
+Los índices explícitos del modelo EF Core atienden consultas repetidas y restricciones de unicidad:
+
+| Índice | Motivo |
+|---|---|
+| `Entradas (ZonaId, Estado)` | Filtrar entradas ocupantes por zona y estado al calcular disponibilidad |
+| `Reservas (ZonaId, Estado, ExpiraEn)` | Sumar reservas activas/no vencidas de una zona |
+| `Compras (AsistenteId, IdempotencyKey)` único | Impedir duplicar compras para una clave del asistente |
+| `Ingresos (ClientScanId)` único | Evitar insertar dos veces el mismo escaneo sincronizado |
+| `Ingresos (EntradaId)` | Consultar ingresos y duplicados por entrada |
+| `Usuarios (Email)` único | Login e identidad única |
+| `RefreshTokens (TokenHash)` único y `RefreshTokens (UsuarioId)` | Validación del refresh token y consulta de tokens del usuario |
+| `DispositivosEscaner (EventoId, PuertaId)` | Localizar dispositivos asociados a evento y puerta |
+| `AuditoriaAdministrativa (EventoId, Fecha)` | Recuperar auditoría de un evento ordenada por fecha |
+| `AuditoriaAdministrativa (TicketId)` | Buscar auditoría asociada a una entrada |
+
+Las claves foráneas también generan índices convencionales en EF Core cuando corresponde. Para revisar el acceso a la fila que protege la contienda por zona, ejecuta este bloque en una sesión de diagnóstico: `EXPLAIN ANALYZE` ejecuta la consulta y `FOR UPDATE` toma el lock, por lo que el bloque termina con `ROLLBACK`.
+
+```sql
+BEGIN;
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT *
+FROM "Zonas"
+WHERE "Id" = 8
+FOR UPDATE;
+ROLLBACK;
+```
+
+Al ser una búsqueda por clave primaria, el plan esperado es un `Index Scan` sobre la clave primaria de `Zonas`, seguido de la adquisición del lock de fila. El plan concreto depende de la versión, estadísticas y datos. `EXPLAIN ANALYZE` sobre una sola sesión no mide la espera causada por concurrencia; para eso se necesitan sesiones concurrentes y métricas de duración.
+
+También se puede inspeccionar el trabajo de los conteos de aforo:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*)
+FROM "Entradas"
+WHERE "ZonaId" = 8
+  AND "Estado" NOT IN ('reembolsada', 'anulada');
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT COALESCE(sum("Cantidad"), 0)
+FROM "Reservas"
+WHERE "ZonaId" = 8
+  AND "Estado" = 'activa'
+  AND "ExpiraEn" > now();
+```
+
+Los índices compuestos ayudan a acotar esas búsquedas; el optimizador puede preferir otro plan en tablas pequeñas. Ejecuta `ANALYZE` después de cargas importantes y compara planes y tiempos con datos representativos antes de decidir cambios.
+
+## Portal de administración
+
+El portal React utiliza el JWT del organizador y opera sobre recursos de su propiedad. Sus módulos están conectados a:
+
+- Creación de evento con zonas y fases: `POST /api/admin/events`.
+- Métricas de ventas: `GET /api/admin/events/{eventId}/sales-summary`.
+- Búsqueda y reembolso administrativo: `GET /api/admin/events/{eventId}/tickets/search` y `POST /api/admin/tickets/{ticketId}/refund`.
+- Accesos e incidentes: `GET /api/admin/events/{eventId}/access-logs` y `/incidents`.
+- Auditoría de acciones administrativas: `GET /api/admin/events/{eventId}/audit-logs`.
+
+El servidor valida el ownership. El portal trata HTTP 403 con una alerta de acceso restringido. La creación de puertas y asignación de staff no está cubierta por el endpoint de creación del evento; los campos visuales correspondientes no se persisten. Las alertas de firma inválida que solo se verifican offline tampoco aparecen en incidentes del backend a menos que el dispositivo las sincronice.
+
+Desarrollo local del portal:
+
+```powershell
+Set-Location .\portal
+npm ci
+npm run dev
+```
+
+Vite reenvía `/api` a `http://localhost:5248`. Para una build de producción ejecuta `npm run build`; el artefacto se genera en `portal/dist`.
+
+## App móvil y rendimiento
+
+La billetera usa `FlatList` para el listado virtualizado de entradas, en lugar de renderizar una colección larga dentro de una vista estática. El token correspondiente a la ventana actual se selecciona con `useMemo`; el QR firmado rota cada 30 segundos. El modo de demostración identifica explícitamente los QR simulados como no válidos para acceso.
+
+### Configuración de conexión
+
+La app usa `EXPO_PUBLIC_API_URL` como override opcional de la URL del backend, por ejemplo `http://192.168.1.20:5248/api`. Sin override, el emulador Android utiliza `http://10.0.2.2:5248/api`; un dispositivo físico obtiene el host de desarrollo de Expo y usa el puerto `5248`. El host debe poder alcanzar la computadora y el backend debe escuchar en todas las interfaces (`http://*:5248`). El puerto `8081` de Expo/Metro sirve el bundle de desarrollo, no es el puerto de la API.
+
+Si el teléfono o emulador conserva una base SQLite creada por una versión anterior, el scanner inspecciona `offline_scans` al iniciar y añade la columna `resultado` cuando no existe; las filas antiguas quedan con resultado predeterminado `ok`. La base conserva la detección local de duplicados entre reinicios de la app.
+
+### Alcance actual del escáner staff
+
+La app verifica firmas Ed25519 y detecta duplicados en SQLite. La pantalla de inicio de turno todavía muestra el evento y las puertas fijos del evento 6, en lugar de cargar las asignaciones del usuario; no confíes en esa selección como una autorización. La app aún no registra el dispositivo con el backend, no sincroniza lecturas ni consulta revocaciones. Además, aunque el backend valida la asignación y pertenencia de la puerta durante el registro del dispositivo, el procesamiento de lotes no vuelve a validar la asignación actual ni que cada entrada pertenezca al evento, y las revocaciones se consultan globalmente. Considera este flujo incompleto para operación real hasta integrar el cliente y cerrar esas validaciones.
+
+Para mantener una interfaz fluida:
+
+- Conserva `FlatList` en listas que puedan crecer, con `keyExtractor` estable y componentes de fila pequeños.
+- Evita recrear callbacks/objetos costosos en cada render si la medición muestra trabajo innecesario; usa `useCallback`, `useMemo` o `React.memo` en los límites que aporten valor.
+- La firma del QR se calcula en backend y el móvil solo verifica; no hagas criptografía ni solicitudes de red dentro de cada render.
+- No confundas memoizar la selección del token con memoizar el componente visual del QR: si se optimiza ese componente, comprueba que solo se vuelva a renderizar al cambiar su valor.
+- El escáner usa `expo-camera`, `tweetnacl` y persistencia local para operar con conectividad intermitente.
+
+## Credenciales de prueba
+
+Solo para la base de datos local sembrada. Las contraseñas del seed son conocidas y **no deben reutilizarse en producción**.
+
+| Rol | Cuenta(s) de ejemplo | Contraseña |
 |---|---|---|
-| Admin | admin@ticketing.test | Admin2026! |
-| Organizador | org.istmo@ticketing.test | Organizador2026! |
-| Staff | staff1@ticketing.test | Staff2026! |
-| Asistente (Ana) | asistente1@correo.test | Asistente2026! |
-| Asistente (Beto) | asistente2@correo.test | Asistente2026! |
+| Administrador | `admin@ticketing.test` | `Admin2026!` |
+| Organizador | `org.istmo@ticketing.test`, `org.canal@ticketing.test`, `org.pacifico@ticketing.test` | `Organizador2026!` |
+| Staff | `staff1@ticketing.test` … `staff12@ticketing.test` | `Staff2026!` |
+| Asistente | `asistente1@correo.test`, `asistente2@correo.test` (hay 600 cuentas `asistenteN@correo.test`) | `Asistente2026!` |
 
-## Los 4 invariantes del enunciado
+## Pruebas
 
-| # | Invariante | Estado |
-|---|---|---|
-| 1 | Nunca se vende más que el aforo (bajo concurrencia) | Implementado. Falta k6. |
-| 2 | Una compra se cobra una sola vez (idempotencia) | Implementado y verificado |
-| 3 | Entrada no falsificable ni copiable (código firmado y rotativo) | Implementado y verificado |
-| 4 | Una entrada entra una sola vez (escaneo offline y sincronización) | Implementado y verificado |
+Los scripts PowerShell de `tests/` cubren aforo, idempotencia, pagos, códigos rotativos, escáner y reglas de negocio. Desde PowerShell en la raíz, inicia PostgreSQL y el backend con la configuración de prueba:
 
-### 1. Nunca se vende más que el aforo
+```powershell
+.\tests\Start-TestEnvironment.ps1
+.\tests\01-aforo.ps1 -Cleanup
+.\tests\02-idempotencia.ps1
+.\tests\03-pago.ps1
+.\tests\04-rotating.ps1
+.\tests\05-scanner.ps1
+.\tests\06-business-rules.ps1
+```
 
-- Advisory lock `pg_advisory_xact_lock(eventoId, asistenteId)` serializa por (evento, asistente).
-- `SELECT ... FOR UPDATE` sobre la zona bloquea la fila hasta el commit.
-- Disponibilidad = aforo − entradas vigentes (`pagada`, `transferida`, `usada`) − reservas activas no vencidas. No se guarda como contador: se calcula.
-- Precio server-side desde la fase vigente al momento de la reserva, no al del pago.
-- Límite por cuenta por evento (definido en `Evento.LimitePorCuenta`, 6 en el seed).
+`01-aforo.ps1` acepta `-Cleanup` para cancelar las reservas creadas durante esa prueba. Los demás scripts pueden cambiar datos; ejecútalos contra una base local de pruebas y restablece el entorno antes de repetir escenarios que dependen de datos iniciales. El helper no borra volúmenes ni datos automáticamente.
 
-### 2. Una compra se cobra una sola vez
+En la verificación local reportada para esta versión, los seis scripts PowerShell (`01`–`06`) terminaron sin fallos. El resultado de k6 y sus precondiciones se detallan abajo y en [`tests/RESULTADOS_CARGA.md`](./tests/RESULTADOS_CARGA.md).
 
-- Tabla `IdempotencyKeys` con PK `(UsuarioId, Endpoint, Clave)`.
-- `INSERT ... ON CONFLICT DO NOTHING` + `bodyHash` semántico (`reserve:{zonaId}:{cantidad}` y `pay:{id}`). Misma clave con distinto body → `422 IdempotencyKeyReused`.
-- Reservas expiran en 10 minutos; `ReservationExpiryService` (BackgroundService cada 30s) libera el cupo.
-- Pago tardío: si la reserva expiró, se crea una `Compra` con estado `reembolsada` para auditoría y se devuelve `409 ReservationExpired`.
-- Dinero en centésimos (enteros, `bigint`, sin floats).
-- Restricción en BD: `Compra (AsistenteId, IdempotencyKey)` única.
+Para devolver el escenario k6 al estado inicial del seed en una base local desechable, puedes eliminar los volúmenes y volver a sembrar:
 
-### 3. Entrada no falsificable ni copiable
+```powershell
+docker compose down -v
+.\tests\Start-TestEnvironment.ps1
+k6 run .\load-test.js
+```
 
-- Firma Ed25519. Clave privada en backend (`data/ed25519.key`, fuera de git), generada al primer arranque y persistida. Clave pública expuesta al móvil vía `GET /api/scanner/public-key`.
-- Payload canónico: `"{entradaId}:{ventana}"` en UTF-8, donde `ventana = floor(unixSeconds / 30)`. Sin JSON, sin orden de campos, sin ambigüedad.
-- Rotación offline. La app descarga un bloque de N tokens firmados (default 20 = 10 minutos offline) y avanza el índice localmente.
-- Verificación offline: firma → ventana (±1 tolerancia) → revocación.
-- Transferencia invalida el código anterior. Se crea una entrada nueva con nuevo `EntradaId` y se revoca la vieja en `RevocacionesEntrada` (motivo `transferida`). El token viejo es criptográficamente válido pero apunta a una entrada revocada.
-- Reembolso también revoca (`motivo = reembolsada`).
-- Clave privada fuera del repositorio (`data/` en `.gitignore`). En producción sería un secret manager (Vault, KMS).
+**`docker compose down -v` elimina los datos de PostgreSQL y la clave Ed25519 persistida en los volúmenes locales. No lo ejecutes si necesitas conservarlos.** El helper de pruebas inicia el backend en `Development` y permite los logins de k6; el Compose normal mantiene `Production` por defecto. No inicies un segundo `dotnet run` en el puerto `5248` mientras el backend de Compose esté activo.
 
-### 4. Una entrada entra una sola vez
+En la corrida k6 confirmada después de iniciar una base limpia y recién sembrada, 200 usuarios compitieron por las últimas 50 plazas: **50 reservas aceptadas, 150 conflictos por capacidad y cero respuestas inesperadas; los umbrales se cumplieron**. Una corrida previa sobre una base que ya tenía reservas activas dio 46 aceptaciones y 154 conflictos y no cumplió el objetivo exacto. Esto ilustra que k6 necesita comenzar con las 50 plazas disponibles. El escenario mide reservas temporales, no pagos, y no se reportan latencias de esa corrida como una garantía general de rendimiento. Los detalles están en [`tests/RESULTADOS_CARGA.md`](./tests/RESULTADOS_CARGA.md).
 
-- Cada escaneo lleva un `ClientScanId` (UUID generado en el móvil).
-- `INSERT ... ON CONFLICT DO NOTHING` sobre `ClientScanId`: subir el mismo lote dos veces no duplica ingresos.
-- Advisory lock por `EntradaId` (`pg_advisory_xact_lock(entradaId)`) serializa dos requests concurrentes (dos puertas sincronizando a la vez). El primero inserta `'ok'`, el segundo ve el `'ok'` y marca `'duplicate'`.
-- `HashSet<int>` intra-lote detecta duplicados dentro del mismo request sin tocar BD.
-- Si el ingreso es `'ok'`, `Entrada.Estado = "usada"`. Esto hace que `Refund` rechace el reembolso tras uso (test #7).
-- Resultados posibles: `'ok'`, `'duplicate'`, `'wrong_event'`, `'wrong_zone'`.
-- Los casos `expired`, `invalid_signature`, `revoked`, `wrong_event`, `wrong_zone` los detecta el escáner offline y no se suben como ingresos válidos. El backend solo reclasifica a `'ok'` o `'duplicate'`.
-- Revocaciones incrementales: `GET /api/scanner/revocations?since=<ts>` para que el escáner actualice su lista local.
+## Preguntas de defensa técnica
 
-## Endpoints
+### ¿Cómo se evita la sobreventa?
 
-Todas las rutas empiezan por `/api/`.
+La disponibilidad se vuelve a calcular dentro de una transacción PostgreSQL. Un advisory lock por `(eventoId, asistenteId)` serializa el límite por cuenta y `SELECT ... FOR UPDATE` serializa las reservas que compiten por la misma zona. Bajo esos locks se cuentan entradas y reservas activas antes de crear la reserva. La lectura que muestra disponibilidad no sustituye esta comprobación transaccional.
 
-### Autenticación
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/refresh`
-- `POST /api/auth/logout`
-- `GET /api/auth/me` (requiere JWT)
+### ¿Por qué Ed25519 y no HMAC?
 
-### Reservas y pagos (Invariante 2)
-- `POST /api/reservas` (requiere `Idempotency-Key`)
-- `POST /api/reservas/{id}/pago` (requiere `Idempotency-Key`)
-- `DELETE /api/reservas/{id}`
+HMAC requiere compartir el secreto de firma con cada dispositivo que verifica; un dispositivo comprometido podría entonces generar firmas. Con Ed25519, el backend conserva la clave privada y los móviles solo reciben la clave pública para verificar.
 
-### Entradas (Invariante 3)
-- `GET /api/tickets/my`
-- `GET /api/tickets/{id}/rotating?count=N` (default 20, máx 100)
-- `POST /api/tickets/{id}/transfer`
-- `POST /api/transfers/{id}/accept`
-- `POST /api/tickets/{id}/refund`
+### ¿Por qué usar una ventana rotativa y no TOTP?
 
-### Escáner (Invariante 4)
-- `POST /api/scanner/devices`
-- `POST /api/scanner/batches`
-- `GET /api/scanner/revocations?since=<ts>`
-- `GET /api/scanner/public-key` (sin auth, pública Ed25519)
+La app muestra tokens firmados por el backend con ventanas temporales de 30 segundos. El verificador no necesita un secreto simétrico compartido: valida la firma asimétrica y la ventana permitida. La tolerancia de reloj y la revocación se deben considerar aparte; actualmente, la app de staff no sincroniza revocaciones.
 
-## Códigos de error
+### ¿Por qué crear una entrada nueva al transferir un ticket?
 
-| Código | HTTP | Significado |
-|---|---|---|
-| `MissingIdempotencyKey` | 400 | Falta header `Idempotency-Key` |
-| `IdempotencyKeyReused` | 422 | Misma key, distinto body |
-| `AlreadyPaid` | 409 | Reserva ya consumida |
-| `ReservationExpired` | 409 | Pago tardío |
-| `TicketNotFound` | 404 | Entrada no existe |
-| `TicketNotActive` | 409 | Entrada no está `pagada` |
-| `TransferNotFound` | 404 | Transferencia no existe |
-| `TransferNotPending` | 409 | Transferencia ya resuelta |
-| `RefundWindowClosed` | 409 | Fuera de `ReembolsableHasta` |
-| `WindowOutOfRange` | — | Token fuera de tolerancia temporal |
-| `InvalidSignature` | — | Firma manipulada |
-| `MalformedSignature` | — | Firma no es base64 |
-| `TicketRevoked` | — | Entrada revocada |
-| `DeviceRegistrationFailed` | 400 | Staff no asignado o puerta incorrecta |
-| `EmptyBatch` | 400 | Lote vacío |
-| `BatchProcessingFailed` | 400 | Dispositivo no encontrado |
-| `InvalidSince` | 400 | `since` no es ISO 8601 |
+Una entrada nueva tiene un identificador distinto. Así, el token previamente emitido sigue asociado a la entrada anterior y esta puede revocarse sin invalidar por ambigüedad la entrada del nuevo titular.
 
-## Decisiones de diseño
+### ¿Qué hace la idempotencia?
 
-### Código en inglés, datos en español
+La misma clave y el mismo contenido permiten devolver el resultado previamente registrado; reutilizar la clave con un contenido distinto se rechaza. Esto evita que reintentos de red creen reservas o compras duplicadas. El pago de este proyecto es simulado: no integra un procesador ni realiza cargos bancarios.
 
-Los nombres de las entidades (`Entrada`, `Reserva`, `Compra`, `RevocacionEntrada`, `DispositivoEscaner`) se mantienen en español para no romper el seed provisto. Todo el código nuevo (servicios, controladores, DTOs, endpoints, códigos de error, logs) está en inglés.
+### ¿Qué persiste el test de carga?
 
-### Por qué Ed25519 y no HMAC
+El escenario crea reservas temporales que ocupan capacidad hasta cancelarse o expirar. No efectúa pagos. Para volver a obtener 50 plazas, usa una base de pruebas recién sembrada o espera/cancela las reservas; no borres los volúmenes si contienen datos que debas conservar.
 
-HMAC usa un secreto compartido: quien verifica también puede firmar. Si roban un escáner, pueden falsificar entradas. Ed25519 separa la clave privada (backend) de la pública (escáner). El escáner solo verifica.
+## Alcance no implementado / trabajo futuro
 
-### Por qué la transferencia crea una entrada nueva
+Estas capacidades no deben inferirse de la arquitectura descrita: no forman parte del alcance funcional actual o requieren integración adicional.
 
-Si solo cambiara el `TitularId`, el payload `{entradaId, ventana}` sería idéntico para el dueño viejo y el nuevo. No habría forma de invalidar el viejo sin invalidar el nuevo. Con `entradaId` nuevo, los tokens viejos apuntan a una entrada revocada.
+- Sincronización móvil del escáner con `/api/scanner/batches`, registro de dispositivos desde la app y descarga/aplicación incremental de revocaciones.
+- Carga dinámica de eventos y puertas asignados al staff, más validación de asignación y pertenencia de cada entrada en todas las operaciones de escaneo.
+- Creación y persistencia de puertas y asignaciones de staff desde el flujo de creación de eventos del portal.
+- Sincronización en vivo del portal mediante WebSockets; los paneles cargan sus datos a través de consultas HTTP.
+- Integración con pasarelas de pago reales, notificaciones push, listas de espera, asientos numerados, Apple/Google Wallet y publicación móvil de producción.
+- Infraestructura productiva de alta disponibilidad, réplicas de lectura, caché distribuida, observabilidad centralizada y pipeline CI/CD. El Docker Compose del repositorio es un entorno local, no una arquitectura HA.
+- Pruebas móviles E2E con Detox/Maestro y defensas especializadas contra bots de compra masiva.
 
-### Por qué la ventana rotativa y no TOTP
+## Rutas principales
 
-TOTP requiere secreto compartido entre emisor y verificador. Aquí el backend firma con privada y el escáner verifica con pública. Es un esquema de firma, no de MAC.
-
-### Por qué el advisory lock por `EntradaId` y no por `EventoId`
-
-Un lock por `EventoId` serializaría todos los escaneos del evento, matando el throughput. Un lock por `EntradaId` solo serializa cuando hay conflicto real entre dos escaneos de la misma entrada.
-
-### Por qué el lote que sube el escáner solo lleva escaneos válidos
-
-El escáner verifica firma, ventana, revocación y duplicados localmente. Solo sube los `'ok'`. Los casos `expired`, `invalid_signature`, `revoked`, `wrong_event`, `wrong_zone` se quedan en el móvil como log local. Reduce el tamaño del lote y evita reclasificar estados que el móvil ya filtró.
-
-### Por qué `Entrada.Estado = "usada"` al ingresar
-
-El test #7 pide que un reembolso tras uso sea rechazado. Al marcar la entrada como `"usada"`, el `Refund` actual rechaza automáticamente con `if (ticket.Estado != "pagada")`. Sin esto, tendríamos que consultar `Ingresos` en el `Refund`.
-
-### Clave privada Ed25519
-
-Generada al primer arranque si no existe, persistida en `data/ed25519.key`. Fuera del repo (`data/` en `.gitignore`). En producción sería un secret manager.
-
-### Modelo de datos y semilla
-
-- Dinero en enteros (centésimos, `bigint`). Nunca decimales ni flotantes.
-- Fechas con `DateTimeOffset` en UTC.
-- IDs de usuarios desplazados. Admin (101), organizadores (201-203) y staff (301-312) chocan con IDs de asistentes (1-600). Se les suma 10000 al sembrar (staff 301 → 10301). Las referencias se ajustan igual.
-- Semilla idempotente: si ya existen usuarios, no recarga. Al terminar, reajusta las secuencias de la BD.
-- Contraseñas con BCrypt. Un hash por cada contraseña distinta, reutilizado entre usuarios de prueba. En producción cada usuario tendría su propio hash con su propia sal.
-- Restricciones en BD como última defensa: `Usuario.Email` único, `Compra (AsistenteId, IdempotencyKey)` única, `Ingreso.ClientScanId` único.
-
-## Tests
-.\tests\02-idempotencia.ps1 # 8/8 PASS
-.\tests\03-pago.ps1 # 10/10 PASS
-.\tests\04-rotating.ps1 # 15/15 PASS
-.\tests\05-scanner.ps1 # 17/17 PASS
-
-
-Cada script imprime `[PASS]` / `[FAIL]` y termina con `Resultado: N PASS / M FAIL`.
-
-### Mapeo con los 9 casos de prueba del enunciado
-
-| # | Caso | Cubierto por | Estado |
-|---|---|---|---|
-| 1 | Carrera por el último cupo (200 vs 50 → 50) | k6 | pendiente |
-| 2 | Doble toque (misma compra dos veces → un cobro) | `02-idempotencia.ps1` | Cubierto |
-| 3 | Reserva vencida (cupo vuelve a estar disponible) | `03-pago.ps1` | Cubierto |
-| 4 | Captura de pantalla (código de hace 1 min → rechazado) | `04-rotating.ps1` | Cubierto |
-| 5 | Transferencia (código del dueño anterior deja de servir) | `04-rotating.ps1` | Cubierto |
-| 6 | Dos puertas offline (misma entrada → incidente al sincronizar) | `05-scanner.ps1` | Cubierto |
-| 7 | Reembolso tras uso (rechazado) | `06-business-rules.ps1` | pendiente |
-| 8 | Organizador ajeno (rechazado) | `06-business-rules.ps1` + AdminController | pendiente |
-| 9 | Precio manipulado (se cobra el real) | `06-business-rules.ps1` | pendiente |
-
-## Pruebas de carga
-
-Pendiente. Escenario previsto con k6: 200 compradores concurrentes sobre una zona con 50 entradas disponibles. Resultado esperado: exactamente 50 vendidas, 0 sobreventa.
-
-## Seguridad
-
-- JWT de acceso corto (15 min) y refresh con rotación (7 días). El refresh viejo se revoca al emitir uno nuevo. Si un refresh ya revocado se reutiliza, se revocan todos los refresh activos del usuario (detección de robo).
-- Roles verificados en el servidor: `asistente`, `staff`, `organizador`, `admin`. Cada controlador declara `[Authorize(Roles = "...")]`.
-- Aislamiento por organizador: un organizador solo ve y modifica sus eventos. (Pendiente AdminController.)
-- Rate limiting: política `auth` (20/min por IP) y `purchase` (60/min por usuario).
-- Secretos por variables de entorno. `Jwt:Key` mínimo 32 caracteres, validado al arrancar. La clave Ed25519 nunca sale del backend.
-- Idempotencia en endpoints que mueven dinero.
-
-## Uso de IA
-
-Se usó Claude y DeepSeek como apoyo para planificar, generar borradores y revisar código. Cada parte fue revisada, probada y entendida. Las decisiones de arquitectura y de concurrencia son propias y defendibles en el video.
-
-## Qué no está incluido (y por qué)
-
-Todo lo que no alcance por tiempo se documenta aquí como decisión consciente por el deadline de 4 días.
-
-- App móvil (React Native + Expo)
-- Portal web de administración
-- k6 load test
-- Docker Compose completo (backend + portal + BD en un `docker compose up`)
-- Tests #7, #8, #9 (script `06-business-rules.ps1`)
-- Lista de espera
-- Selección de asiento numerado
-- Push notifications
-- Apple/Google Wallet
-- WebSocket para live updates
-- Despliegue en GCP/Azure
-- CI/CD (GitHub Actions)
-- Tests e2e automatizados (Detox / Maestro)
-- Observabilidad con OpenTelemetry
-- Protección contra bots
-
-Lo que sí está: los 4 invariantes completos, 6 de 9 casos de prueba cubiertos con scripts, y esta documentación.
-
-## Cómo se defiende (preguntas probables)
-
-- ¿Por qué Ed25519 y no HMAC? HMAC usa secreto compartido: quien verifica también firma. Ed25519 separa privada (backend) de pública (escáner). El escáner solo verifica.
-- ¿Por qué la transferencia crea entrada nueva? Si solo cambiara el titular, el payload `{entradaId, ventana}` sería idéntico para viejo y nuevo. Con `entradaId` nuevo, los tokens viejos apuntan a una entrada revocada.
-- ¿Cómo se previene la sobreventa? Advisory lock por (evento, asistente) + `SELECT ... FOR UPDATE` sobre la zona. Disponibilidad = aforo − vendidas − reservas activas. Todo en una transacción.
-- ¿Cómo funciona el pago tardío? Si la reserva expiró, se crea una `Compra` con estado `reembolsada` para auditoría y se devuelve `409 ReservationExpired`.
-- ¿Cómo se detecta el doble ingreso? Advisory lock por `EntradaId` + `HashSet` intra-lote. El segundo escaneo se inserta con `Resultado = 'duplicate'`.
-- ¿Por qué la ventana rotativa y no TOTP? TOTP requiere secreto compartido. Aquí el backend firma con privada y el escáner verifica con pública. Es un esquema de firma, no de MAC.
-- ¿Dónde vive la clave privada? En `data/ed25519.key`, fuera del repo (`.gitignore`), generada al primer arranque. En producción sería un secret manager.
-- ¿Qué pasa si reinicio el backend? Carga la misma privada del archivo, los tokens viejos siguen válidos.
-- ¿Qué impide que un móvil robado falsifique entradas? Que solo tiene la pública, y la pública no firma. Necesitaría la privada, que nunca sale del backend.
+- Auth: `/api/auth/register`, `/login`, `/refresh`, `/logout`, `/me`.
+- Reservas/pagos: `/api/reservas`, `/api/reservas/{id}/pago`, `/api/reservas/{id}`.
+- Entradas: `/api/tickets/my`, `/api/tickets/{id}/rotating`, `/api/tickets/{id}/transfer`, `/api/tickets/{id}/refund`.
+- Escáner: `/api/scanner/devices`, `/api/scanner/batches`, `/api/scanner/revocations`, `/api/scanner/public-key`.
+- Administración: rutas `/api/admin/events` y `/api/admin/tickets` indicadas en la sección del portal.

@@ -37,6 +37,47 @@ namespace Ticketing.Api.Migrations
                     b.ToTable("AsignacionesStaff");
                 });
 
+            modelBuilder.Entity("Ticketing.Api.Models.AuditoriaAdministrativa", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Accion")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Autor")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("EventoId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("Fecha")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("Motivo")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("TicketId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TicketId");
+
+                    b.HasIndex("EventoId", "Fecha");
+
+                    b.ToTable("AuditoriasAdministrativas");
+                });
+
             modelBuilder.Entity("Ticketing.Api.Models.Compra", b =>
                 {
                     b.Property<int>("Id")
@@ -553,6 +594,15 @@ namespace Ticketing.Api.Migrations
                     b.HasOne("Ticketing.Api.Models.Usuario", null)
                         .WithMany()
                         .HasForeignKey("StaffId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Ticketing.Api.Models.AuditoriaAdministrativa", b =>
+                {
+                    b.HasOne("Ticketing.Api.Models.Evento", null)
+                        .WithMany()
+                        .HasForeignKey("EventoId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

@@ -21,6 +21,7 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
     public DbSet<IdempotencyKey> IdempotencyKeys => Set<IdempotencyKey>();
     public DbSet<RevocacionEntrada> RevocacionesEntrada => Set<RevocacionEntrada>();
     public DbSet<DispositivoEscaner> DispositivosEscaner => Set<DispositivoEscaner>();
+    public DbSet<AuditoriaAdministrativa> AuditoriasAdministrativas => Set<AuditoriaAdministrativa>();
 
     private static void Fk<TDep, TPrin>(ModelBuilder b, Expression<Func<TDep, object?>> fk)
         where TDep : class where TPrin : class =>
@@ -32,6 +33,10 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         b.Entity<IdempotencyKey>().HasKey(k => new { k.UsuarioId, k.Endpoint, k.Clave });
         b.Entity<RevocacionEntrada>().HasKey(r => r.EntradaId);
         b.Entity<DispositivoEscaner>().HasKey(d => d.Id);
+        b.Entity<AuditoriaAdministrativa>().HasKey(a => a.Id);
+        b.Entity<AuditoriaAdministrativa>()
+            .Property(a => a.Fecha)
+            .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
 
 
@@ -47,6 +52,8 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         b.Entity<RefreshToken>().HasIndex(x => x.UsuarioId);
         b.Entity<RevocacionEntrada>().HasIndex(r => r.RevocadaEn);
         b.Entity<DispositivoEscaner>().HasIndex(d => new { d.EventoId, d.PuertaId });
+        b.Entity<AuditoriaAdministrativa>().HasIndex(a => new { a.EventoId, a.Fecha });
+        b.Entity<AuditoriaAdministrativa>().HasIndex(a => a.TicketId);
 
 
 
@@ -75,6 +82,7 @@ public class TicketingDb(DbContextOptions<TicketingDb> options) : DbContext(opti
         Fk<DispositivoEscaner, Usuario>(b, x => x.UsuarioId);
         Fk<DispositivoEscaner, Evento>(b, x => x.EventoId);
         Fk<DispositivoEscaner, Puerta>(b, x => x.PuertaId);
+        Fk<AuditoriaAdministrativa, Evento>(b, x => x.EventoId);
 
     }
 }

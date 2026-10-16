@@ -33,6 +33,7 @@ function Psql($sql) {
 
 Write-Host "== 05 - Invariante 4: una entrada entra una sola vez ==" -ForegroundColor Cyan
 
+# ---------- Setup: login del staff ----------
 Write-Host "`n-- Setup --" -ForegroundColor Yellow
 
 $staffLogin = Invoke-RestMethod "$base/api/auth/login" -Method Post -ContentType $j `
@@ -41,6 +42,7 @@ Check "Login staff OK" ($null -ne $staffLogin.accessToken)
 
 $staffH = @{ Authorization = "Bearer $($staffLogin.accessToken)" }
 
+# ---------- Buscar una entrada 'pagada' del evento 1 ----------
 if ($TicketId -eq 0) {
     $raw = Psql 'SELECT "Id" FROM "Entradas" WHERE "EventoId" = 1 AND "Estado" = ''pagada'' ORDER BY "Id" LIMIT 1;'
     if ([string]::IsNullOrWhiteSpace($raw)) {
@@ -55,6 +57,7 @@ Write-Host "Entrada a escanear: $TicketId" -ForegroundColor Gray
 $estado = Psql "SELECT ""Estado"" FROM ""Entradas"" WHERE ""Id"" = $TicketId;"
 Check "Entrada $TicketId está 'pagada'" ($estado -eq "pagada")
 
+# ---------- Registrar dos dispositivos ----------
 Write-Host "`n-- Registro de dispositivos --" -ForegroundColor Yellow
 
 $deviceABody = @{ eventoId = 1; puertaId = 1 } | ConvertTo-Json
@@ -65,6 +68,7 @@ $deviceBBody = @{ eventoId = 1; puertaId = 2 } | ConvertTo-Json
 $deviceB = Invoke-RestMethod "$base/api/scanner/devices" -Method Post -Headers $staffH -ContentType $j -Body $deviceBBody
 Check "Dispositivo B registrado (evento 1, puerta 2)" ($deviceB.deviceId -gt 0)
 
+# ---------- Test #6: dos puertas offline, misma entrada ----------
 Write-Host "`n-- Test #6: dos puertas offline, misma entrada --" -ForegroundColor Yellow
 
 $scanIdA = [guid]::NewGuid().ToString()

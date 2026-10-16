@@ -13,7 +13,7 @@ import * as Crypto from 'expo-crypto';
 import { Buffer } from 'buffer';
 import nacl from 'tweetnacl';
 import { router } from 'expo-router';
-import { API_BASE_URL } from '@/lib/api';
+import { API_URL } from '@/config/api';
 import {
   decodeRotatingToken,
   TOKEN_WINDOW_SECONDS,
@@ -110,6 +110,15 @@ export default function ScannerScreen() {
       );
     `);
 
+    const offlineScanColumns = db.getAllSync<{ name: string }>(
+      'PRAGMA table_info(offline_scans);',
+    );
+    if (!offlineScanColumns.some((column) => column.name === 'resultado')) {
+      db.execSync(
+        "ALTER TABLE offline_scans ADD COLUMN resultado TEXT NOT NULL DEFAULT 'ok';",
+      );
+    }
+
     const cachedKey = db.getFirstSync<{ value: string }>(
       'SELECT value FROM scanner_config WHERE key = ?;',
       ['ed25519.publicKey'],
@@ -125,7 +134,7 @@ export default function ScannerScreen() {
     const refreshPublicKey = async () => {
       if (PUBLIC_KEY_OVERRIDE) return;
       try {
-        const response = await fetch(`${API_BASE_URL}/api/scanner/public-key`);
+        const response = await fetch(`${API_URL}/scanner/public-key`);
         if (!response.ok) {
           throw new Error(`El backend respondió HTTP ${response.status}.`);
         }

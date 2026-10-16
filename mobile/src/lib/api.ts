@@ -1,8 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
+import { API_URL } from '@/config/api';
 
-export const API_BASE_URL = (
-  process.env.EXPO_PUBLIC_API_URL ?? 'http://10.0.2.2:5248'
-).replace(/\/$/, '');
+export const API_BASE_URL = API_URL.replace(/\/api$/, '');
 
 export const ACCESS_TOKEN_KEY = 'ticketing.accessToken';
 

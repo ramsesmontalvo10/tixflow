@@ -161,3 +161,14 @@ public class DispositivoEscaner
     public DateTimeOffset RegistradoEn { get; set; }
     public DateTimeOffset? UltimaSync { get; set; }
 }
+
+public class AuditoriaAdministrativa
+{
+    public int Id { get; set; }
+    public int EventoId { get; set; }
+    public string TicketId { get; set; } = "";
+    public string Accion { get; set; } = "";
+    public string Motivo { get; set; } = "";
+    public string Autor { get; set; } = "";
+    public DateTime Fecha { get; set; } = DateTime.UtcNow;
+}

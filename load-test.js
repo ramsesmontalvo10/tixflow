@@ -2,10 +2,9 @@ import http from "k6/http";
 import { check, fail } from "k6";
 import { Counter, Trend } from "k6/metrics";
 
-// Ejecutar desde la raíz: k6 run .\load-test.js
-// Antes, iniciar la API local permitiendo los 200 logins del setup:
-//   $env:RateLimit__AuthPerMinute = "1000"
-//   dotnet run --project .\backend\Ticketing.Api\Ticketing.Api.csproj --launch-profile http
+// Ejecutar desde la raíz con la API y PostgreSQL de Docker:
+//   .\tests\Start-TestEnvironment.ps1
+//   k6 run .\load-test.js
 // Requiere la BD recién sembrada, con las 50 entradas disponibles de la zona 8.
 // Las reservas aceptadas quedan activas hasta que venza su plazo (10 minutos por defecto).
 const BASE_URL = (__ENV.BASE_URL || "http://localhost:5248").replace(/\/$/, "");
@@ -82,6 +81,7 @@ export function setup() {
     params: {
       headers: { "Content-Type": "application/json" },
       tags: { operation: "login" },
+      responseCallback: http.expectedStatuses(200),
     },
   }));
 
@@ -90,7 +90,7 @@ export function setup() {
     if (response.status !== 200) {
       fail(
         `No se pudo iniciar sesión como ${users[index].email} (HTTP ${response.status}). ` +
-          "Aumenta RateLimit__AuthPerMinute en el backend local y vuelve a ejecutar.",
+          "Inicia el entorno con .\\tests\\Start-TestEnvironment.ps1 y vuelve a ejecutar.",
       );
     }
 
@@ -116,6 +116,7 @@ export default function (data) {
         "Idempotency-Key": `k6-event-${EVENT_ID}-vu-${__VU}`,
       },
       tags: { operation: "reservation" },
+      responseCallback: http.expectedStatuses(201, 409),
     },
   );
 
